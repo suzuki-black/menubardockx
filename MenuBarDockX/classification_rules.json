@@ -1,0 +1,45 @@
+{
+  "rules": [
+    { "bundleID": "com.docker.docker",                   "category": "開発" },
+    { "bundleID": "com.jetbrains.toolbox",               "category": "開発" },
+    { "bundleID": "com.jetbrains.gateway",               "category": "開発" },
+    { "bundleID": "com.github.GitHubDesktop",            "category": "開発" },
+    { "bundleID": "com.git-fork.git-fork",               "category": "開発" },
+    { "bundleID": "io.httpie.desktop",                   "category": "開発" },
+    { "bundleID": "com.loom.desktop",                    "category": "開発" },
+
+    { "bundleID": "com.dropbox.client2",                 "category": "クラウド" },
+    { "bundleID": "com.getdropbox.dropbox",              "category": "クラウド" },
+    { "bundleID": "com.microsoft.OneDrive",              "category": "クラウド" },
+    { "bundleID": "com.google.drivefs.findhelper",       "category": "クラウド" },
+    { "bundleID": "com.google.GoogleDrive",              "category": "クラウド" },
+    { "bundleID": "com.apple.CloudDocs.iCloudDriveFinderSync", "category": "クラウド" },
+    { "bundleID": "com.box.desktop",                     "category": "クラウド" },
+    { "bundleID": "com.amazon.Amazon-Drive",             "category": "クラウド" },
+
+    { "bundleID": "com.agilebits.onepassword7",          "category": "セキュリティ" },
+    { "bundleID": "com.agilebits.onepassword-osx",       "category": "セキュリティ" },
+    { "bundleID": "com.bitwarden.desktop",               "category": "セキュリティ" },
+    { "bundleID": "com.dashlane.dashlane",               "category": "セキュリティ" },
+    { "bundleID": "com.lastpass.LastPass",               "category": "セキュリティ" },
+    { "bundleID": "com.objective-see.lulu",              "category": "セキュリティ" },
+    { "bundleID": "com.objective-see.blockblock",        "category": "セキュリティ" },
+    { "bundleID": "com.malwarebytes.antimalware",        "category": "セキュリティ" },
+    { "bundleID": "com.sophos.endpoint.uiserver",        "category": "セキュリティ" },
+
+    { "bundleID": "com.raycast.macos",                   "category": "ユーティリティ" },
+    { "bundleID": "com.sindresorhus.Lungo",              "category": "ユーティリティ" },
+    { "bundleID": "com.hegenberg.BetterTouchTool",       "category": "ユーティリティ" },
+    { "bundleID": "com.nulana.remotixmac",               "category": "ユーティリティ" },
+    { "bundleID": "com.manytricks.Mango",                "category": "ユーティリティ" },
+    { "bundleID": "org.pqrs.Karabiner-Elements.Settings","category": "ユーティリティ" },
+    { "bundleID": "pl.maketheweb.Overflow3",             "category": "ユーティリティ" },
+    { "bundleID": "com.tapbots.TweetbotMac",             "category": "ユーティリティ" },
+    { "bundleID": "com.charcoaldesign.ShaderToy",        "category": "ユーティリティ" },
+    { "bundleID": "net.antelle.keeweb",                  "category": "ユーティリティ" },
+    { "bundleID": "com.apple.dt.Xcode",                  "category": "開発" }
+  ],
+  "prefixRules": [
+    { "prefix": "com.apple.",                            "category": "システム" }
+  ]
+}

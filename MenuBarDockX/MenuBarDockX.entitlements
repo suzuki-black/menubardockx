@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Accessibility API access -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+	<!-- Needed for CGWindowListCreateImage (screen capture) -->
+	<key>com.apple.security.device.camera</key>
+	<false/>
+	<!-- Allow JIT for scripting bridges if needed -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<false/>
+	<!-- Disable sandbox for AX API and screen capture (OSS / non-App Store) -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

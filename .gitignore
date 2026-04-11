@@ -1,0 +1,68 @@
+# =========================================================
+# MenuBarDockX — .gitignore
+# OSS 公開前提。個人情報・AI生成物・ビルド成果物を除外。
+# =========================================================
+
+# --- AI / Claude / LLM 関連（絶対に含めてはいけない）---
+.claude/
+**/.claude/
+claude.*
+*.prompt
+*.prompt.md
+CLAUDE.md
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+Icon?
+._*
+
+# --- Xcode / Swift ビルド成果物 ---
+DerivedData/
+build/
+*.xcuserstate
+*.xcuserdata/
+*.xcuserdatad/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+
+# --- 開発時デバッグログ（個人情報を含む可能性あり）---
+/tmp/mbdx_*.log
+*.log
+
+# --- 秘密情報 / ローカル設定 ---
+.env
+.env.*
+*.local
+*.secret
+*.pem
+*.p12
+*.cer
+*.mobileprovision
+
+# --- パッケージマネージャ ---
+.build/
+Packages/
+Package.resolved
+
+# --- 配布物（DMG等）---
+dist/
+*.dmg
+*.pkg
+
+# --- その他 ---
+*.o
+*.a
+*.swp
+*~
