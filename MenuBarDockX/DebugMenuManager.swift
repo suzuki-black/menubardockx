@@ -14,6 +14,19 @@ final class DebugSettings {
         didSet { NotificationCenter.default.post(name: .debugSettingsChanged, object: nil) }
     }
 
+    // MARK: Dummy icon count
+    // Number of dummy NSStatusItems to add when "ダミーアイコンでバーを埋める" is ON.
+    // Selectable via the debug submenu so we can test guillemet position with
+    // different amounts of overflow (1 item → just barely overflows, 20 → many hidden).
+    private static let dummyCountKey = "debug.dummyIconCount"
+    var dummyIconCount: Int {
+        get {
+            let v = UserDefaults.standard.integer(forKey: Self.dummyCountKey)
+            return v > 0 ? v : 5   // default 5
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Self.dummyCountKey) }
+    }
+
     // MARK: JetBrains Toolbox pinned item (left/right click verification)
 
     /// When true, Toolbox is always prepended to the overflow panel regardless of its
@@ -37,10 +50,7 @@ final class DebugSettings {
     var hiddenDummyItems: [MenuBarItem] = []
 
     /// Called by OverflowStatusManager to supplement real hidden items.
-    func makeDummyHiddenItems() -> [MenuBarItem] {
-        guard simulatedNotchEnabled else { return [] }
-        return hiddenDummyItems
-    }
+    func makeDummyHiddenItems() -> [MenuBarItem] { hiddenDummyItems }
 
     /// If Toolbox pinning is enabled, prepends the Toolbox MenuBarItem to `items`.
     /// Runs on the background thread (same as poll).
@@ -70,6 +80,8 @@ final class DebugMenuManager {
     private weak var notchMenuItem:   NSMenuItem?
     private weak var dummyMenuItem:   NSMenuItem?
     private weak var toolboxMenuItem: NSMenuItem?
+    // Key: count value, Value: menu item (for checkmark management)
+    private var countMenuItems: [Int: NSMenuItem] = [:]
 
     private var overlayWindow: SimulatedNotchOverlay?
 
@@ -120,6 +132,39 @@ final class DebugMenuManager {
         toolboxItem.state  = .off
         menu.addItem(toolboxItem)
         toolboxMenuItem = toolboxItem
+
+        // Dummy icon count submenu
+        let countSubMenu = NSMenu()
+        let countParent  = NSMenuItem(title: "ダミーアイコン数: \(DebugSettings.shared.dummyIconCount)個",
+                                      action: nil, keyEquivalent: "")
+        menu.addItem(countParent)
+        menu.setSubmenu(countSubMenu, for: countParent)
+
+        countMenuItems.removeAll()
+        let counts = [1, 2, 3, 5, 8, 10, 15, 20]
+        let current = DebugSettings.shared.dummyIconCount
+        for n in counts {
+            let item = NSMenuItem(title: "\(n)個",
+                                  action: #selector(selectDummyCount(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.tag    = n
+            item.state  = (n == current) ? .on : .off
+            countSubMenu.addItem(item)
+            countMenuItems[n] = item
+        }
+
+        let axItem = NSMenuItem(title: "アクセシビリティ権限を確認",
+                                action: #selector(checkPermissions),
+                                keyEquivalent: "")
+        axItem.target = self
+        menu.addItem(axItem)
+    }
+
+    @objc private func checkPermissions() {
+        EnvironmentChecker.requestAccessibilityIfNeeded()
+        let report = EnvironmentChecker.run()
+        EnvironmentChecker.presentReport(report, in: nil)
     }
 
     // MARK: Toggle actions
@@ -159,6 +204,24 @@ final class DebugMenuManager {
         NSLog("[DEBUG][Toolbox] pinned=%@", s.pinnedToolboxEnabled ? "ON" : "OFF")
     }
 
+    @objc private func selectDummyCount(_ sender: NSMenuItem) {
+        let n = sender.tag
+        DebugSettings.shared.dummyIconCount = n
+        // Update checkmarks
+        countMenuItems.forEach { $0.value.state = ($0.key == n) ? .on : .off }
+        // Update parent title (best-effort)
+        if let subMenu = sender.menu, let parent = subMenu.supermenu {
+            if let idx = parent.items.firstIndex(where: { $0.submenu === subMenu }) {
+                parent.items[idx].title = "ダミーアイコン数: \(n)個"
+            }
+        }
+        // If dummy icons are currently active, re-apply with new count
+        if DebugSettings.shared.dummyIconsEnabled {
+            removeDummyIcons()
+            addDummyIcons()
+        }
+    }
+
     @objc private func toggleDummyIcons() {
         let s = DebugSettings.shared
         s.dummyIconsEnabled.toggle()
@@ -185,17 +248,22 @@ final class DebugMenuManager {
     private func addDummyIcons() {
         removeDummyIcons()
 
+        // Use the user-selected count. Width is fixed to squareLength so each item
+        // takes the same space regardless of notch type, making count intuitive.
+        let itemCount = DebugSettings.shared.dummyIconCount
+        let itemWidth: CGFloat = NSStatusItem.squareLength
+
         let colors: [NSColor] = [.systemRed, .systemOrange, .systemYellow,
                                   .systemGreen, .systemBlue, .systemPurple]
 
-        for i in 0..<30 {
+        for i in 0..<itemCount {
             let idx   = i + 1
             let color = colors[i % colors.count]
             let image = makeDummyImage(index: idx, color: color)
             let label = String(format: "%02d", idx)
 
             // NSStatusItem for the menu bar
-            let statusItem = NSStatusBar.system.statusItem(withLength: 48)
+            let statusItem = NSStatusBar.system.statusItem(withLength: itemWidth)
             if let btn = statusItem.button {
                 btn.image         = image
                 btn.imagePosition = .imageLeft
@@ -271,8 +339,13 @@ final class DebugMenuManager {
     func applyNotchHiding() {
         let s = DebugSettings.shared
 
-        guard let notchInfo = s.makeSimulatedNotchInfo() else {
-            // Simulated notch not active — restore everything
+        // Prefer simulated notch when active; fall back to real notch detection.
+        // On a non-notch Mac without simulation both return hasNotch=false → bail out.
+        let isSimulated = s.simulatedNotchEnabled
+        let notchInfo: NotchInfo = s.makeSimulatedNotchInfo() ?? NotchDetector.detect()
+
+        guard notchInfo.hasNotch else {
+            // No notch of any kind — restore everything
             dummyEntries.forEach { $0.statusItem.isVisible = true }
             s.hiddenDummyItems = []
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -281,38 +354,42 @@ final class DebugMenuManager {
             return
         }
 
-        // Step 2-3: classify each dummy item as overflowed or visible
+        // Classify each dummy item as overflowed or visible.
         var visible: [(entry: DummyEntry, frame: CGRect)] = []
         var overflowed: [(entry: DummyEntry, frame: CGRect?)] = []
 
         for entry in dummyEntries {
             if let f = screenFrame(of: entry.statusItem) {
-                // minX < notchRightEdge means the item's left edge crosses into notch territory
+                // minX < notchRightEdge → left edge crosses into notch territory
                 if f.minX < notchInfo.rightEdgeX {
                     overflowed.append((entry, f))
                 } else {
                     visible.append((entry, f))
                 }
             } else {
-                // No window frame available → item couldn't be laid out → treat as overflowed
+                // No window frame:
+                //   Simulated notch — item couldn't be laid out (bar is full)
+                //   Real notch      — macOS has already hidden this item (window detached)
                 overflowed.append((entry, nil))
             }
         }
 
         var logLines = [
-            "[DEBUG] applyNotchHiding",
+            "[DEBUG] applyNotchHiding isSimulated=\(isSimulated)",
             "  notchRight=\(Int(notchInfo.rightEdgeX))",
             "  visible=\(visible.count)  overflowed=\(overflowed.count)",
         ]
 
-        // Step 3: apply visibility
+        // Simulated notch: manually control isVisible — macOS won't hide items for us.
+        // Real notch: macOS already hides overflowed items; never touch isVisible here
+        //             or it triggers unwanted layout cascades.
         for item in visible {
-            item.entry.statusItem.isVisible = true
+            if isSimulated { item.entry.statusItem.isVisible = true }
             logLines.append("  VISIBLE  \(item.entry.menuBarItem.appName): x=\(Int(item.frame.minX))")
         }
         for item in overflowed {
-            item.entry.statusItem.isVisible = false
-            let xStr = item.frame.map { "x=\(Int($0.minX))" } ?? "no-frame"
+            if isSimulated { item.entry.statusItem.isVisible = false }
+            let xStr = item.frame.map { "x=\(Int($0.minX))" } ?? "hidden-by-os"
             logLines.append("  OVERFLOW \(item.entry.menuBarItem.appName): \(xStr)")
         }
 
@@ -329,10 +406,11 @@ final class DebugMenuManager {
         s.hiddenDummyItems = hiddenItems
 
         // Step 4: wait for isVisible=false to settle in the status bar layout,
-        // then surface the guillemet + panel through OverflowStatusManager
+        // then surface the guillemet + panel through OverflowStatusManager.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             OverflowStatusManager.shared.displayItems(hiddenItems)
         }
+
     }
 
     // MARK: Helpers

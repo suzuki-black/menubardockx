@@ -19,14 +19,51 @@ final class MenuBarEnumerator {
     /// Returns items that are in AXExtrasMenuBar but have no valid screen position —
     /// i.e., items hidden because the macOS notch blocks them.
     /// Call this from OverflowStatusManager (background thread OK).
-    func enumerateHiddenItems() -> [MenuBarItem] {
+    ///
+    /// 隠れ判定の 2 パターン:
+    ///   A. pos.x <= 0 → macOS がアイテムを可視域外に追い出した
+    ///      旧実装は (pos.x==0 && width==0) のみを捕捉していたが、
+    ///      Stats など一部アプリは「pos.x=0 だが width > 0」で返すため
+    ///      pos.x <= 0 全体を捕捉するよう拡張。
+    ///   B. pos.x がノッチゾーン内 (0 < pos.x < notchInfo.rightEdgeX) →
+    ///      物理的にノッチに隠れているが AX 上は有効座標を保持している。
+    ///
+    /// 重複排除の 2 レイヤー:
+    ///   1. stableKey (bundleID + description) — 通常のデドゥプ
+    ///   2. SF Symbol キー (bundleID + symbol) — Battery 英/日語バリアント対策
+    /// ノッチ/画面外に隠れているメニューバーアイテムを列挙する。
+    /// - Parameter dtos: DataStore から読み込んだ保存済み DTO。
+    ///   stableKey で照合し、ID・categoryID・sortOrder を復元する。
+    ///   nil の場合は既存の knownIDs のみを使用する（後方互換）。
+    func enumerateHiddenItems(merging dtos: [MenuBarItemDTO] = []) -> [MenuBarItem] {
         guard AXIsProcessTrusted() else { return [] }
 
-        var results: [MenuBarItem] = []
-        var sortIndex = 0
-        var seen = Set<String>()
+        // DTO を stableKey でインデックス化する（ID・categoryID の復元に使用）
+        var dtoByKey: [String: MenuBarItemDTO] = [:]
+        for dto in dtos {
+            let key = stableKey(bundleID: dto.bundleID,
+                                description: dto.axDescription,
+                                appName: dto.appName)
+            dtoByKey[key] = dto
+        }
 
-        // Query every running app's AXExtrasMenuBar
+        let notchInfo: NotchInfo
+        #if DEBUG
+        notchInfo = DebugSettings.shared.makeSimulatedNotchInfo() ?? NotchDetector.detect()
+        #else
+        notchInfo = NotchDetector.detect()
+        #endif
+
+        var results:  [MenuBarItem] = []
+        var sortIndex = 0
+        var seen      = Set<String>()   // stableKey (bundleID|desc) 重複排除
+        var seenSym   = Set<String>()   // SF Symbol キー重複排除 (Battery 二重対策)
+
+        var logLines: [String] = [
+            "[enumerateHiddenItems] notch=\(notchInfo.hasNotch) rightEdgeX=\(Int(notchInfo.rightEdgeX))"
+        ]
+
+        // ── Candidate processes ─────────────────────────────────────────────
         var candidates: [NSRunningApplication] = []
         for bid in ["com.apple.controlcenter", "com.apple.SystemUIServer"] {
             if let app = NSRunningApplication
@@ -41,11 +78,15 @@ final class MenuBarEnumerator {
             candidates.append(app)
         }
 
+        let myBundleID = Bundle.main.bundleIdentifier ?? ""
+
         for app in candidates {
             let pid     = app.processIdentifier
             let bid     = app.bundleIdentifier
             let appName = app.localizedName ?? (bid ?? "\(pid)")
             let axApp   = AXUIElementCreateApplication(pid)
+
+            if bid == myBundleID { continue }
 
             var extrasRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(
@@ -58,24 +99,65 @@ final class MenuBarEnumerator {
                 extrasBar, kAXChildrenAttribute as CFString, &childrenRef) == .success,
                   let children = childrenRef as? [AXUIElement] else { continue }
 
+            logLines.append("[\(appName)] extras children=\(children.count)")
+
             for element in children {
                 let pos  = axPosition(element)
                 let size = axSize(element)
-                // Only items with zero position/size are hidden by the notch
-                guard pos.x == 0, size.width == 0 else { continue }
+                let desc = axDescription(element)
 
-                let desc     = axDescription(element)
-                let isApple  = (bid ?? "").hasPrefix("com.apple.")
+                // ── 隠れアイテム判定 ─────────────────────────────────────────
+                //
+                // Pattern A: pos.x <= 0
+                //   status item の左端が 0 以下 = macOS が可視域外に追い出した。
+                //   「pos.x==0 && width==0」のみを見ていた旧実装では
+                //   Stats 等 (pos.x=0, width>0) を取り逃がしていたため拡張。
+                let isHiddenLeft = pos.x <= 0
 
-                // Skip empty-description Apple-system items: these are controls the
-                // user deliberately turned off in System Settings, not notch overflow.
-                // Third-party apps with empty desc are still shown (identified by appName).
+                // Pattern B: ノッチゾーン内 (有効座標だがノッチに隠されている)
+                //   pos.x が 0 より大きく notchInfo.rightEdgeX より小さい
+                //   → アイテムの左端がノッチ内に入っている
+                let isInNotchZone = notchInfo.hasNotch
+                    && pos.x > 0
+                    && pos.x < notchInfo.rightEdgeX
+
+                let isHidden = isHiddenLeft || isInNotchZone
+
+                logLines.append(
+                    "  [\(appName)] x=\(Int(pos.x)) w=\(Int(size.width)) '\(desc)'" +
+                    " hiddenL=\(isHiddenLeft) notch=\(isInNotchZone)"
+                )
+
+                guard isHidden else { continue }
+
+                // Apple system item で description が空 → ユーザーが意図的に
+                // 非表示にした設定コントロール（overflow ではない）
+                let isApple = (bid ?? "").hasPrefix("com.apple.")
                 guard !desc.isEmpty || !isApple else { continue }
 
-                let key  = stableKey(bundleID: bid, description: desc, appName: appName)
+                // ── 重複排除 ─────────────────────────────────────────────────
+                // Layer 1: stableKey (bundleID + description)
+                let key = stableKey(bundleID: bid, description: desc, appName: appName)
                 guard seen.insert(key).inserted else { continue }
 
-                let id = knownIDs[key] ?? { let u = UUID(); knownIDs[key] = u; return u }()
+                // Layer 2: SF Symbol キー (Battery 英語/日本語バリアント対策)
+                // sfSymbol() が non-nil = 既知のシステムアイコン。
+                // 同一 symbol が同 bundleID から 2 回現れたら 2 枚目を除去する。
+                if let sym = sfSymbol(for: desc) {
+                    let symKey = "\(bid ?? appName)|\(sym)"
+                    guard seenSym.insert(symKey).inserted else {
+                        logLines.append("    -> dup by symbol '\(sym)', skipped")
+                        continue
+                    }
+                }
+
+                // ── アイテム生成 ─────────────────────────────────────────────
+                // DTO が存在する場合は保存済みの ID を優先する（再起動後もIDを安定させる）。
+                // knownIDs は同一セッション内での安定化に使用する。
+                let id: UUID
+                if let dto = dtoByKey[key]    { id = dto.id }
+                else if let e = knownIDs[key] { id = e }
+                else                          { let u = UUID(); knownIDs[key] = u; id = u }
 
                 var item = MenuBarItem(
                     id: id,
@@ -84,9 +166,9 @@ final class MenuBarEnumerator {
                     axDescription: desc,
                     frame: .zero,
                     isSystemItem: isSystemItem(bundleID: bid,
-                                              execPath: app.executableURL?.path ?? ""),
-                    categoryID: nil,
-                    sortOrder: sortIndex
+                                               execPath: app.executableURL?.path ?? ""),
+                    categoryID: dtoByKey[key]?.categoryID,
+                    sortOrder: dtoByKey[key]?.sortOrder ?? sortIndex
                 )
                 item.isHidden  = true
                 item.image     = resolveImage(element: element, description: desc, app: app)
@@ -94,8 +176,13 @@ final class MenuBarEnumerator {
 
                 results.append(item)
                 sortIndex += 1
+                logLines.append("    -> ACCEPTED '\(appName)/\(desc)'")
             }
         }
+
+        // デバッグログ（enumerate の /tmp/mbdx_items.log とは別ファイル）
+        try? logLines.joined(separator: "\n")
+            .write(toFile: "/tmp/mbdx_hidden.log", atomically: true, encoding: .utf8)
 
         return results
     }
