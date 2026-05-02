@@ -109,7 +109,7 @@ final class DebugMenuManager {
         )
         menu.addItem(header)
 
-        let notchItem = NSMenuItem(title: "擬似ノッチ (Simulate Notch)",
+        let notchItem = NSMenuItem(title: L("Simulate Notch", "擬似ノッチ (Simulate Notch)"),
                                    action: #selector(toggleSimulatedNotch),
                                    keyEquivalent: "")
         notchItem.target = self
@@ -117,7 +117,7 @@ final class DebugMenuManager {
         menu.addItem(notchItem)
         notchMenuItem = notchItem
 
-        let dummyItem = NSMenuItem(title: "ダミーアイコンでバーを埋める",
+        let dummyItem = NSMenuItem(title: L("Fill bar with dummy icons", "ダミーアイコンでバーを埋める"),
                                    action: #selector(toggleDummyIcons),
                                    keyEquivalent: "")
         dummyItem.target = self
@@ -125,7 +125,8 @@ final class DebugMenuManager {
         menu.addItem(dummyItem)
         dummyMenuItem = dummyItem
 
-        let toolboxItem = NSMenuItem(title: "JetBrains Toolbox を常に表示 (左右クリック検証)",
+        let toolboxItem = NSMenuItem(title: L("Always show JetBrains Toolbox (click forwarding test)",
+                                              "JetBrains Toolbox を常に表示 (左右クリック検証)"),
                                      action: #selector(togglePinnedToolbox),
                                      keyEquivalent: "")
         toolboxItem.target = self
@@ -135,8 +136,10 @@ final class DebugMenuManager {
 
         // Dummy icon count submenu
         let countSubMenu = NSMenu()
-        let countParent  = NSMenuItem(title: "ダミーアイコン数: \(DebugSettings.shared.dummyIconCount)個",
-                                      action: nil, keyEquivalent: "")
+        let countParent  = NSMenuItem(
+            title: L("Dummy icon count: \(DebugSettings.shared.dummyIconCount)",
+                     "ダミーアイコン数: \(DebugSettings.shared.dummyIconCount)個"),
+            action: nil, keyEquivalent: "")
         menu.addItem(countParent)
         menu.setSubmenu(countSubMenu, for: countParent)
 
@@ -144,7 +147,7 @@ final class DebugMenuManager {
         let counts = [1, 2, 3, 5, 8, 10, 15, 20]
         let current = DebugSettings.shared.dummyIconCount
         for n in counts {
-            let item = NSMenuItem(title: "\(n)個",
+            let item = NSMenuItem(title: L("\(n)", "\(n)個"),
                                   action: #selector(selectDummyCount(_:)),
                                   keyEquivalent: "")
             item.target = self
@@ -154,7 +157,7 @@ final class DebugMenuManager {
             countMenuItems[n] = item
         }
 
-        let axItem = NSMenuItem(title: "アクセシビリティ権限を確認",
+        let axItem = NSMenuItem(title: L("Check Accessibility permission", "アクセシビリティ権限を確認"),
                                 action: #selector(checkPermissions),
                                 keyEquivalent: "")
         axItem.target = self
@@ -212,7 +215,7 @@ final class DebugMenuManager {
         // Update parent title (best-effort)
         if let subMenu = sender.menu, let parent = subMenu.supermenu {
             if let idx = parent.items.firstIndex(where: { $0.submenu === subMenu }) {
-                parent.items[idx].title = "ダミーアイコン数: \(n)個"
+                parent.items[idx].title = L("Dummy icon count: \(n)", "ダミーアイコン数: \(n)個")
             }
         }
         // If dummy icons are currently active, re-apply with new count
