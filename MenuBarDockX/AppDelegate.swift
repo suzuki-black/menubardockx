@@ -47,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Shared enumerator (used by the overflow manager)
     private let sharedEnumerator = MenuBarEnumerator()
 
+    private var languageObserver: Any?
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false // We live in the menu bar
     }
@@ -83,6 +85,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Show environment warnings (non-blocking)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             EnvironmentChecker.presentReport(report, in: nil)
+        }
+
+        // Rebuild menu when language changes
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: LanguageManager.didChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            self?.rebuildMenu()
         }
     }
 
@@ -124,13 +133,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.toolTip = "MenuBarDockX"
         dbg("status item visible=\(statusItem?.isVisible == true)")
 
+        statusItem?.menu = makeMenu()
+    }
+
+    private func makeMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(withTitle: "このアプリについて…",
+        menu.addItem(withTitle: L("About MenuBarDockX…", "このアプリについて…"),
                      action: #selector(showAbout),
                      keyEquivalent: "")
             .target = self
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(withTitle: "MenuBarDockX を終了",
+        menu.addItem(withTitle: L("Quit MenuBarDockX", "MenuBarDockX を終了"),
                      action: #selector(NSApplication.terminate(_:)),
                      keyEquivalent: "q")
 
@@ -138,7 +151,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DebugMenuManager.shared.addDebugSection(to: menu)
         #endif
 
-        statusItem?.menu = menu
+        return menu
+    }
+
+    private func rebuildMenu() {
+        statusItem?.menu = makeMenu()
     }
 
     // MARK: - Actions
@@ -151,9 +168,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText     = "MenuBarDockX"
         alert.informativeText = """
-            バージョン \(version) (build \(build))
+            \(L("Version", "バージョン")) \(version) (build \(build))
 
-            macOS のメニューバーを、見える場所に取り戻す。
+            \(L("Bring your hidden menu bar icons back into view.",
+                "macOS のメニューバーを、見える場所に取り戻す。"))
 
             © 2026 suzuki-black
             MIT License
@@ -162,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let icon = NSApp.applicationIconImage {
             alert.icon = icon
         }
-        alert.addButton(withTitle: "閉じる")
+        alert.addButton(withTitle: L("Close", "閉じる"))
         alert.runModal()
     }
 }

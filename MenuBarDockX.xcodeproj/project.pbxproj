@@ -19,6 +19,7 @@
 		BB0000000000000000000020 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* main.swift */; };
 		BB0000000000000000000030 /* OverflowUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* OverflowUI.swift */; };
 		BB0000000000000000000031 /* DebugMenuManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000031 /* DebugMenuManager.swift */; };
+		BB0000000000000000000032 /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000032 /* LanguageManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 		AA0000000000000000000020 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		AA0000000000000000000030 /* OverflowUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverflowUI.swift; sourceTree = "<group>"; };
 		AA0000000000000000000031 /* DebugMenuManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugMenuManager.swift; sourceTree = "<group>"; };
+		AA0000000000000000000032 /* LanguageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,6 +73,7 @@
 				AA0000000000000000000007 /* ClassificationRulesManager.swift */,
 				AA0000000000000000000030 /* OverflowUI.swift */,
 				AA0000000000000000000031 /* DebugMenuManager.swift */,
+				AA0000000000000000000032 /* LanguageManager.swift */,
 				AA000000000000000000000E /* classification_rules.json */,
 				AA000000000000000000000F /* Assets.xcassets */,
 				AA0000000000000000000010 /* Info.plist */,
@@ -174,6 +177,7 @@
 				BB000000000000000000000D /* MagneticWindowManager.swift in Sources */,
 				BB0000000000000000000030 /* OverflowUI.swift in Sources */,
 				BB0000000000000000000031 /* DebugMenuManager.swift in Sources */,
+				BB0000000000000000000032 /* LanguageManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

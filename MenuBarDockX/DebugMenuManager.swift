@@ -323,7 +323,7 @@ final class DebugMenuManager {
     //  - Status items accumulate right→left inside the right safe area only
     //  - When items overflow (would extend left of notch right edge), macOS simply
     //    makes them invisible — they are NOT moved to the left of the notch
-    //  - The ⟫ guillemet is itself a status item in the right safe area; it appears
+    //  - The ▾ indicator is itself a status item in the right safe area; it appears
     //    when ANY item is hidden, consuming its own width from the right safe area
     //
     // === Emulation strategy ===

@@ -32,13 +32,13 @@ enum NotchDetector {
 //
 // セカンダリバー方式への移行:
 //
-// 旧方式: AppDelegate の NSStatusItem ボタンを直接 ⟫ に書き換えて overflow を示した。
+// 旧方式: AppDelegate の NSStatusItem ボタンを直接 ▾ に書き換えて overflow を示した。
 //   問題: macOS 26 では NSStatusItem の priority 制御が効かず、
 //         バーが混雑すると自アイコンもノッチ内に押し込まれて不可視になる。
 //
 // 新方式: NotchIndicatorPanel (NSPanel, level=26) を notchInfo.rightEdgeX に固定配置。
 //   利点: NSStatusItem の並び順・優先度と完全に独立しているため、
-//         何個アイコンが追加されてもノッチ境界に確実に ⟫ が表示される。
+//         何個アイコンが追加されてもノッチ境界に確実に ▾ が表示される。
 //   NSStatusItem はメニュー（設定・終了）専用として引き続き存在し、一切変更しない。
 
 final class OverflowStatusManager {
@@ -216,7 +216,7 @@ final class NotchIndicatorPanel: NSPanel {
 
     // MARK: - Private state
 
-    /// ⟫ を表示するボタン。
+    /// ▾ を表示するボタン。
     /// attributedTitle で NSColor.labelColor を指定し、ダーク/ライト両対応とする。
     private let guilemetButton: NSButton = {
         let btn = NSButton()
@@ -225,10 +225,10 @@ final class NotchIndicatorPanel: NSPanel {
         btn.setButtonType(.momentaryPushIn)
         // attributedTitle でフォントと色を明示指定（labelColor = 環境に応じた適切なコントラスト）
         btn.attributedTitle = NSAttributedString(
-            string: "⟫",
+            string: "▾",
             attributes: [
                 .foregroundColor: NSColor.labelColor,
-                .font:            NSFont.systemFont(ofSize: 14, weight: .semibold)
+                .font:            NSFont.systemFont(ofSize: 16, weight: .semibold)
             ]
         )
         return btn
@@ -283,8 +283,8 @@ final class NotchIndicatorPanel: NSPanel {
 
     // MARK: Key / Main window policy
 
-    // ⟫ インジケーターは「トリガースイッチ」に徹する。
-    // canBecomeKey = false にすることで、⟫ クリック時に NotchIndicatorPanel が
+    // ▾ インジケーターは「トリガースイッチ」に徹する。
+    // canBecomeKey = false にすることで、▾ クリック時に NotchIndicatorPanel が
     // キーウィンドウを奪わないようにする。
     // キーウィンドウは OverflowPanel だけが保持する。
     override var canBecomeKey:  Bool { false }
@@ -462,7 +462,7 @@ final class OverflowPanelController: NSObject {
         panel.hasShadow          = true
         // NSPanel のデフォルト hidesOnDeactivate=true はアプリが一瞬でも非アクティブに
         // なった瞬間パネルを自動非表示にする。hidePanel() を経由しないため
-        // [hidePanel] ログが出ず、⟫ インジケーターも復元されない。
+        // [hidePanel] ログが出ず、▾ インジケーターも復元されない。
         // false にしてパネルの表示/非表示を自前で完全制御する。
         panel.hidesOnDeactivate  = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -508,7 +508,7 @@ final class OverflowPanelController: NSObject {
         // この showPanel より後に発火しても orderOut をスキップさせるため。
         panelGeneration += 1
 
-        // ② アンカー（⟫ インジケーター）をキー候補から除外するため一時的に隠す。
+        // ② アンカー（▾ インジケーター）をキー候補から除外するため一時的に隠す。
         //   canBecomeKey = false の NotchIndicatorPanel が画面に残っていると、
         //   OS がキー候補を探す際に干渉することがある。
         anchorPanel = anchor
@@ -583,7 +583,7 @@ final class OverflowPanelController: NSObject {
             }
             self.panel.orderOut(nil)
             self.panel.alphaValue = 1
-            // showPanel で隠した ⟫ インジケーターを再表示する。
+            // showPanel で隠した ▾ インジケーターを再表示する。
             // OverflowStatusManager のポーリングよりも即座に戻す。
             // orderFront の override 内でも preventWindowOrdering を呼ぶが、
             // ここでも明示的に呼ぶことで OverflowPanel の keyWindow 状態を確実に守る。
@@ -1352,7 +1352,7 @@ final class OverflowPanelContent: NSView {
     /// 編集モード中の右クリックでカテゴリ割り当てメニューを表示する。
     private func showCategoryMenu(for item: MenuBarItem) {
         let menu = NSMenu()
-        let header = NSMenuItem(title: "カテゴリを割り当て", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: L("Assign Category", "カテゴリを割り当て"), action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
@@ -2465,7 +2465,8 @@ final class OverflowSettingsViewController: NSViewController {
     private let brightLabel       = NSTextField(labelWithString: "")
     private let satSlider         = NSSlider()
     private let satLabel          = NSTextField(labelWithString: "")
-    private let dismissCheck      = NSButton(checkboxWithTitle: "クリック後にパネルを閉じる",
+    private let dismissCheck      = NSButton(checkboxWithTitle: L("Close panel on click",
+                                                                   "クリック後にパネルを閉じる"),
                                              target: nil, action: nil)
 
     static let popoverWidth: CGFloat = 220
@@ -2505,7 +2506,7 @@ final class OverflowSettingsViewController: NSViewController {
         view.addSubview(makeSeparator(y: y))
         y += 1 + 8
 
-        view.addSubview(makeSectionHeader("パネル動作", x: pad, y: y))
+        view.addSubview(makeSectionHeader(L("Panel Behavior", "パネル動作"), x: pad, y: y))
         y += 14 + 10
 
         // ── Section 2: 表示（透過度 + アイコン幅）────────────────────────
@@ -2530,7 +2531,7 @@ final class OverflowSettingsViewController: NSViewController {
         view.addSubview(opacitySlider)
         y += 20 + 3
 
-        view.addSubview(makeSubLabel("背景の不透明度", x: pad, y: y))
+        view.addSubview(makeSubLabel(L("Background Opacity", "背景の不透明度"), x: pad, y: y))
         y += 11 + 10
 
         // ── なじみ補正 (明度・彩度) ────────────────────────────────────────
@@ -2555,7 +2556,7 @@ final class OverflowSettingsViewController: NSViewController {
         view.addSubview(satSlider)
         y += 20 + 3
 
-        view.addSubview(makeSubLabel("彩度補正", x: pad, y: y))
+        view.addSubview(makeSubLabel(L("Saturation", "彩度補正"), x: pad, y: y))
         y += 11 + 6
 
         // 明度補正スライダー
@@ -2578,10 +2579,10 @@ final class OverflowSettingsViewController: NSViewController {
         view.addSubview(brightSlider)
         y += 20 + 3
 
-        view.addSubview(makeSubLabel("明度補正", x: pad, y: y))
+        view.addSubview(makeSubLabel(L("Brightness", "明度補正"), x: pad, y: y))
         y += 11 + 6
 
-        view.addSubview(makeSectionHeader("なじみ補正", x: pad, y: y))
+        view.addSubview(makeSectionHeader(L("Blend", "なじみ補正"), x: pad, y: y))
         y += 14 + 8
 
         // アイコン幅スライダー
@@ -2604,20 +2605,20 @@ final class OverflowSettingsViewController: NSViewController {
         view.addSubview(widthSlider)
         y += 20 + 3
 
-        view.addSubview(makeSubLabel("アイコン幅", x: pad, y: y))
+        view.addSubview(makeSubLabel(L("Icon Width", "アイコン幅"), x: pad, y: y))
         y += 11 + 10
 
         view.addSubview(makeSeparator(y: y))
         y += 1 + 8
 
-        view.addSubview(makeSectionHeader("表示", x: pad, y: y))
+        view.addSubview(makeSectionHeader(L("Display", "表示"), x: pad, y: y))
         y += 14 + 10
 
         // ── Section 1: 表示モード ─────────────────────────────────────────
 
         modeSegment.segmentCount    = 2
-        modeSegment.setLabel("フラット",   forSegment: 0)
-        modeSegment.setLabel("カテゴリ",   forSegment: 1)
+        modeSegment.setLabel(L("Flat",     "フラット"), forSegment: 0)
+        modeSegment.setLabel(L("Category", "カテゴリ"), forSegment: 1)
         modeSegment.selectedSegment = settings.displayMode == .flat ? 0 : 1
         modeSegment.segmentStyle    = .texturedRounded
         modeSegment.target          = self
@@ -2629,8 +2630,28 @@ final class OverflowSettingsViewController: NSViewController {
         view.addSubview(makeSeparator(y: y))
         y += 1 + 8
 
-        // ── 編集モードボタン ──────────────────────────────────────────────
-        let editTitle = currentEditMode ? "✏️ 編集中" : "✏️ 編集モード"
+        // ── Language ──────────────────────────────────────────────────────
+        let langSegment = NSSegmentedControl()
+        langSegment.segmentCount    = 2
+        langSegment.setLabel("English",  forSegment: 0)
+        langSegment.setLabel("日本語",   forSegment: 1)
+        langSegment.selectedSegment = LanguageManager.shared.isEnglish ? 0 : 1
+        langSegment.segmentStyle    = .texturedRounded
+        langSegment.target          = self
+        langSegment.action          = #selector(langSegmentChanged)
+        langSegment.frame = NSRect(x: pad, y: y, width: contentW, height: 24)
+        view.addSubview(langSegment)
+        y += 24 + 3
+
+        view.addSubview(makeSectionHeader("Language", x: pad, y: y))
+        y += 14 + pad
+
+        view.addSubview(makeSeparator(y: y))
+        y += 1 + 8
+
+        // ── Edit Mode button ──────────────────────────────────────────────
+        let editTitle = currentEditMode ? L("✏️ Editing", "✏️ 編集中")
+                                        : L("✏️ Edit Mode", "✏️ 編集モード")
         let btn = NSButton(title: editTitle, target: self, action: #selector(editModeTapped))
         btn.bezelStyle = .rounded
         btn.frame = NSRect(x: pad, y: y, width: contentW, height: 24)
@@ -2644,12 +2665,20 @@ final class OverflowSettingsViewController: NSViewController {
 
     // MARK: Actions
 
+    @objc private func langSegmentChanged(_ sender: NSSegmentedControl) {
+        let lang: AppLanguage = sender.selectedSegment == 0 ? .english : .japanese
+        LanguageManager.shared.current = lang
+        // Close and reopen the popover so labels refresh with the new language
+        view.window?.close()
+    }
+
     @objc private func editModeTapped() {
         // onEditModeToggle の内部で vc.currentEditMode が正しく更新される。
         // ここで toggle() を重ねると二重トグルになるため、呼ばない。
         onEditModeToggle?()
         // コールバック完了後、currentEditMode は最新値になっているのでそのままタイトルに反映する。
-        editModeButton?.title = currentEditMode ? "✏️ 編集中" : "✏️ 編集モード"
+        editModeButton?.title = currentEditMode ? L("✏️ Editing", "✏️ 編集中")
+                                                : L("✏️ Edit Mode", "✏️ 編集モード")
     }
 
     @objc private func modeSegmentChanged() {
