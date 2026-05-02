@@ -38,7 +38,7 @@ No subscription. No telemetry. No external server. Everything runs locally.
 
 | Overflow Panel | Settings Panel | DEBUG Menu (Debug build only) |
 |:---:|:---:|:---:|
-| ![overflow](docs/screenshots/overflow_panel.png) | ![settings](docs/screenshots/settings_panel.png) | ![debug](docs/screenshots/debug_menu.png) |
+| ![overflow](docs/screenshots/overflow_panel.png) | ![settings](docs/screenshots/settings_panel_en.png) | ![debug](docs/screenshots/debug_menu_en.png) |
 | Background color sampled from the real menu bar | Brightness ×1.10 / Saturation ×0.88 | DEBUG section (hidden in Release builds) |
 
 ---
@@ -363,7 +363,7 @@ MenuBarDockX は、ノッチに隠れたり画面外に押し出されたメニ�
 
 | オーバーフローパネル | 設定パネル | DEBUG メニュー（Debug ビルドのみ）|
 |:---:|:---:|:---:|
-| ![overflow](docs/screenshots/overflow_panel.png) | ![settings](docs/screenshots/settings_panel.png) | ![debug](docs/screenshots/debug_menu.png) |
+| ![overflow](docs/screenshots/overflow_panel.png) | ![settings](docs/screenshots/settings_panel_ja.png) | ![debug](docs/screenshots/debug_menu_ja.png) |
 | メニューバーと色が一致した背景 | 明度 ×1.10 / 彩度 ×0.88 | DEBUG セクション（Release では非表示）|
 
 ---
