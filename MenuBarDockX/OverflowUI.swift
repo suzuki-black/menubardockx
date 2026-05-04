@@ -830,90 +830,6 @@ final class OverflowPanelController: NSObject {
         #endif
     }
 
-    /// Synthesizes a right mouse click at the center of the given AX element.
-    /// Used as a fallback when AXShowMenu is not supported by the element's process.
-    ///
-    /// Ice/Thaw OSS の実装に倣い:
-    ///  1. CGWindowListCopyWindowInfo でアイコンの CGWindowID を取得
-    ///  2. イベントに windowID・mouseEventWindowUnderMousePointer を明示指定
-    ///  3. イベント抑制を解除した上で sessionEventTap で送信
-    /// これにより座標ベースのヒットテストをバイパスして確実にターゲットウィンドウへ届ける。
-    private static func synthesizeRightClick(on element: AXUIElement) {
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let pv = posRef, let sv = sizeRef else { return }
-
-        var pos  = CGPoint.zero
-        var size = CGSize.zero
-        AXValueGetValue(pv as! AXValue, .cgPoint, &pos)
-        AXValueGetValue(sv as! AXValue, .cgSize,  &size)
-
-        // AX 座標系: 原点 = 画面左上、Y 軸は下向き
-        let pt = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
-
-        // ① アイコンが属するウィンドウの CGWindowID を CGWindowList から取得
-        //   座標が一致するウィンドウを探す（オーナー PID も参照して絞り込む）
-        var ownerPID: pid_t = 0
-        AXUIElementGetPid(element, &ownerPID)
-        let windowID = Self.findWindowID(near: pos, size: size, ownerPID: ownerPID)
-
-        // ② イベント抑制を解除する
-        //   macOS は合成イベント送信直後の短い時間ウィンドウで後続イベントを抑制するため
-        //   これを解除しないとメニューが開かない（Ice/Thaw OSS で確認済みの必須設定）。
-        let src = CGEventSource(stateID: .combinedSessionState)
-        let permitAll: CGEventFilterMask = [
-            .permitLocalMouseEvents,
-            .permitLocalKeyboardEvents,
-            .permitSystemDefinedEvents
-        ]
-        src?.setLocalEventsFilterDuringSuppressionState(
-            permitAll, state: .eventSuppressionStateRemoteMouseDrag)
-        src?.setLocalEventsFilterDuringSuppressionState(
-            permitAll, state: .eventSuppressionStateSuppressionInterval)
-        src?.localEventsSuppressionInterval = 0
-
-        guard let down = CGEvent(mouseEventSource: src, mouseType: .rightMouseDown,
-                                 mouseCursorPosition: pt, mouseButton: .right),
-              let up   = CGEvent(mouseEventSource: src, mouseType: .rightMouseUp,
-                                 mouseCursorPosition: pt, mouseButton: .right) else { return }
-
-        // ③ カーソルをアイコン位置にワープ → postToPid でプロセスに直接注入 → カーソル復元
-        //
-        //    背景:
-        //    - postToPid でイベントを注入しても、受け取り側は「現在のハードウェアカーソル位置」
-        //      でウィンドウを探す。カーソルがパネル上にある場合は NSStatusBarWindow に届かない。
-        //    - 先にカーソルを AX 座標へワープしてからイベントを注入することで、
-        //      受け取り側アプリが自プロセスの NSStatusBarWindow を正しく見つけられる。
-        //    - ControlCenter (layer=25) は他プロセスのイベントキューには影響しないため
-        //      postToPid なら ControlCenter をバイパスできる。
-        //    - ワープ → 注入 → 復元 を 20ms 以内に完了することでカーソルジャンプを最小化する。
-        down.setIntegerValueField(.mouseEventClickState, value: 1)
-        up.setIntegerValueField(.mouseEventClickState, value: 1)
-
-        // 現在カーソル位置を保存（AppKit 座標 y=底起点 → Quartz 座標 y=上起点 に変換）
-        let savedAppKit = NSEvent.mouseLocation
-        let screenH = NSScreen.main?.frame.height ?? 900
-        let savedQuartz = CGPoint(x: savedAppKit.x, y: screenH - savedAppKit.y)
-
-        // カーソルをアイコン中心にワープ
-        CGWarpMouseCursorPosition(pt)
-
-        // プロセスに直接注入
-        down.postToPid(ownerPID)
-        up.postToPid(ownerPID)
-
-        #if DEBUG
-        ClickLog("[synthesizeRightClick] warp+postToPid ownerPID=\(ownerPID) pt=\(pt) savedCursor=\(savedQuartz)")
-        #endif
-
-        // カーソルを元の位置に復元（20ms後）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
-            CGWarpMouseCursorPosition(savedQuartz)
-        }
-    }
-
     /// CGWindowListCopyWindowInfo でアイコン座標付近のウィンドウ ID を探す。
     /// オーナー PID が一致するものを優先し、次に座標が含まれるものを返す。
     private static func findWindowID(near origin: CGPoint,
@@ -3235,23 +3151,6 @@ enum MenuBarGradientSampler {
         return ciContext.createCGImage(ci, from: originalExtent)
     }
 
-    // MARK: - 方式A：横方向全ピクセル平均色（単色）
-
-    /// 方式A: 1px 行の全ピクセルを算術平均した 1×1 CGImage を返す。
-    /// layer.contents にセットすると solidOverlay 全面が均一色になる。
-    /// （方式Bより情報量は少ないが、実装がシンプルで縞が出ない）
-    static func averagedColorImage(from image: CGImage) -> CGImage? {
-        var pixel = [UInt8](repeating: 0, count: 4)
-        guard let ctx = CGContext(
-            data:             &pixel,
-            width:            1, height: 1,
-            bitsPerComponent: 8, bytesPerRow: 4,
-            space:            CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo:       CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return nil }
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-        return ctx.makeImage()
-    }
 }
 
 // MARK: - DebugColorBarWindow ─────────────────────────────────────────────────

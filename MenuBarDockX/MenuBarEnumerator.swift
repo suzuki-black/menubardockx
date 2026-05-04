@@ -206,9 +206,10 @@ final class MenuBarEnumerator {
             }
         }
 
-        // デバッグログ（enumerate の /tmp/mbdx_items.log とは別ファイル）
+        #if DEBUG
         try? logLines.joined(separator: "\n")
             .write(toFile: "/tmp/mbdx_hidden.log", atomically: true, encoding: .utf8)
+        #endif
 
         return results
     }
@@ -265,8 +266,10 @@ final class MenuBarEnumerator {
             results.append(contentsOf: appItems)
         }
 
+        #if DEBUG
         try? logLines.joined(separator: "\n")
             .write(toFile: "/tmp/mbdx_items.log", atomically: true, encoding: .utf8)
+        #endif
 
         return results.sorted { $0.sortOrder < $1.sortOrder }
     }
