@@ -121,9 +121,16 @@ final class MenuBarEnumerator {
                 // Pattern B: ノッチゾーン内 (有効座標だがノッチに隠されている)
                 //   pos.x が 0 より大きく notchInfo.rightEdgeX より小さい
                 //   → アイテムの左端がノッチ内に入っている
+                //
+                // + 40pt のマージンを加える理由:
+                //   NotchDetector.rightEdgeX は物理的なカメラ筐体の右端より
+                //   数ピクセル内側を返すことがあり、ノッチ直後に配置された
+                //   アイコン (pos.x が rightEdgeX を数 pt 超えるだけ) が
+                //   視覚上はノッチに隠れているのに "可視" と誤判定される。
+                //   40pt の余裕を持たせることで確実に捕捉する。
                 let isInNotchZone = notchInfo.hasNotch
                     && pos.x > 0
-                    && pos.x < notchInfo.rightEdgeX
+                    && pos.x < notchInfo.rightEdgeX + 40
 
                 let isHidden = isHiddenLeft || isInNotchZone
 
