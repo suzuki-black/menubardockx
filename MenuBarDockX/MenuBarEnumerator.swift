@@ -58,6 +58,9 @@ final class MenuBarEnumerator {
         var sortIndex = 0
         var seen      = Set<String>()   // stableKey (bundleID|desc) 重複排除
         var seenSym   = Set<String>()   // SF Symbol キー重複排除 (Battery 二重対策)
+        // description が空の非 Apple アイテム (Stats 等) は同一 bundleID から複数存在しうる。
+        // per-bundleID カウンタで各アイテムに固有のサフィックスを付与し、重複排除を防ぐ。
+        var emptyDescCount: [String: Int] = [:]
 
         var logLines: [String] = [
             "[enumerateHiddenItems] notch=\(notchInfo.hasNotch) rightEdgeX=\(Int(notchInfo.rightEdgeX))"
@@ -102,9 +105,10 @@ final class MenuBarEnumerator {
             logLines.append("[\(appName)] extras children=\(children.count)")
 
             for element in children {
-                let pos  = axPosition(element)
-                let size = axSize(element)
-                let desc = axDescription(element)
+                let pos   = axPosition(element)
+                let size  = axSize(element)
+                let desc  = axDescription(element)
+                let title = axTitle(element)
 
                 // ── 隠れアイテム判定 ─────────────────────────────────────────
                 //
@@ -124,7 +128,7 @@ final class MenuBarEnumerator {
                 let isHidden = isHiddenLeft || isInNotchZone
 
                 logLines.append(
-                    "  [\(appName)] x=\(Int(pos.x)) w=\(Int(size.width)) '\(desc)'" +
+                    "  [\(appName)] x=\(Int(pos.x)) w=\(Int(size.width)) desc='\(desc)' title='\(title)'" +
                     " hiddenL=\(isHiddenLeft) notch=\(isInNotchZone)"
                 )
 
@@ -133,17 +137,32 @@ final class MenuBarEnumerator {
                 // Apple system item で description が空 → ユーザーが意図的に
                 // 非表示にした設定コントロール（overflow ではない）
                 let isApple = (bid ?? "").hasPrefix("com.apple.")
-                guard !desc.isEmpty || !isApple else { continue }
+                guard !desc.isEmpty || !title.isEmpty || !isApple else { continue }
+
+                // desc が空のとき AXTitle を description 代替として使用する。
+                // Stats 等は desc が空でも title が "CPU", "Network" 等で識別可能な場合がある。
+                let effectiveDesc = desc.isEmpty ? title : desc
 
                 // ── 重複排除 ─────────────────────────────────────────────────
                 // Layer 1: stableKey (bundleID + description)
-                let key = stableKey(bundleID: bid, description: desc, appName: appName)
+                // effectiveDesc が空の非 Apple アイテム (Stats 等) は同一 bundleID から
+                // 複数存在しうる。同一キーでまとめると 1 件しか表示されないため、
+                // 空のときは per-bundleID インデックスをサフィックスに付加する。
+                let key: String
+                if effectiveDesc.isEmpty {
+                    let appKey = bid ?? appName
+                    let idx = emptyDescCount[appKey, default: 0]
+                    emptyDescCount[appKey] = idx + 1
+                    key = stableKey(bundleID: bid, description: "|empty:\(idx)", appName: appName)
+                } else {
+                    key = stableKey(bundleID: bid, description: effectiveDesc, appName: appName)
+                }
                 guard seen.insert(key).inserted else { continue }
 
                 // Layer 2: SF Symbol キー (Battery 英語/日本語バリアント対策)
                 // sfSymbol() が non-nil = 既知のシステムアイコン。
                 // 同一 symbol が同 bundleID から 2 回現れたら 2 枚目を除去する。
-                if let sym = sfSymbol(for: desc) {
+                if let sym = sfSymbol(for: effectiveDesc) {
                     let symKey = "\(bid ?? appName)|\(sym)"
                     guard seenSym.insert(symKey).inserted else {
                         logLines.append("    -> dup by symbol '\(sym)', skipped")
@@ -163,7 +182,7 @@ final class MenuBarEnumerator {
                     id: id,
                     bundleID: bid,
                     appName: appName,
-                    axDescription: desc,
+                    axDescription: effectiveDesc,
                     frame: .zero,
                     isSystemItem: isSystemItem(bundleID: bid,
                                                execPath: app.executableURL?.path ?? ""),
@@ -171,7 +190,7 @@ final class MenuBarEnumerator {
                     sortOrder: dtoByKey[key]?.sortOrder ?? sortIndex
                 )
                 item.isHidden  = true
-                item.image     = resolveImage(element: element, description: desc, app: app)
+                item.image     = resolveImage(element: element, description: effectiveDesc, app: app)
                 item.axElement = element
 
                 results.append(item)
@@ -515,6 +534,12 @@ final class MenuBarEnumerator {
         return (r as? String) ?? ""
     }
 
+    private func axTitle(_ e: AXUIElement) -> String {
+        var r: CFTypeRef?
+        AXUIElementCopyAttributeValue(e, kAXTitleAttribute as CFString, &r)
+        return (r as? String) ?? ""
+    }
+
     private func axRole(_ e: AXUIElement) -> String {
         var r: CFTypeRef?
         AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r)
@@ -524,24 +549,39 @@ final class MenuBarEnumerator {
     // MARK: - Image resolution
 
     /// Returns the best available icon for a status item.
-    /// Priority: AXImage attribute → SF Symbol (system items) → app icon
+    /// Priority: AXImage on element → AXImage on children → SF Symbol → app icon
     private func resolveImage(element: AXUIElement,
                               description: String,
                               app: NSRunningApplication) -> NSImage? {
-        // 1. AX-provided image (rare but clean)
+        // 1. AX-provided image on the element itself (rare but clean)
         var imgRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(
             element, "AXImage" as CFString, &imgRef) == .success,
            let img = imgRef as? NSImage { return img }
 
-        // 2. SF Symbol for known system items
+        // 2. AXImage on direct children (Stats 等のカスタムビューに対応)
+        //    Stats の各ウィジェットは NSButton ではなくカスタム NSView のため
+        //    element 自体に AXImage がない場合でも子ビューが持つことがある。
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                var childImg: CFTypeRef?
+                if AXUIElementCopyAttributeValue(
+                    child, "AXImage" as CFString, &childImg) == .success,
+                   let img = childImg as? NSImage { return img }
+            }
+        }
+
+        // 3. SF Symbol for known system items
         if let sym = sfSymbol(for: description) {
             let cfg = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
             return NSImage(systemSymbolName: sym, accessibilityDescription: description)?
                 .withSymbolConfiguration(cfg)
         }
 
-        // 3. App bundle icon (high-res, always looks good)
+        // 4. App bundle icon (high-res, always looks good)
         return app.icon
     }
 

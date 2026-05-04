@@ -1,6 +1,10 @@
 import AppKit
 import ApplicationServices
 
+private extension CGRect {
+    var center: CGPoint { CGPoint(x: midX, y: midY) }
+}
+
 // MARK: - NotchInfo ────────────────────────────────────────────────────────────
 
 struct NotchInfo {
@@ -53,8 +57,10 @@ final class OverflowStatusManager {
     private var panelController: OverflowPanelController?
     private var indicatorPanel:  NotchIndicatorPanel?
     private var pollTimer: Timer?
+    private var lastHiddenIDs: Set<UUID> = []
     private var lastHiddenCount = -1
     private var isOverflowMode  = false
+    private var terminationObserver: Any?
 
     private init() {}
 
@@ -64,6 +70,22 @@ final class OverflowStatusManager {
         panelController    = OverflowPanelController()
         indicatorPanel     = makeIndicatorPanel()
         schedulePoll()
+        observeAppTermination()
+    }
+
+    /// アプリ終了を即座に検知してパネルを更新する。
+    /// 3 秒ポーリングを待たずにアイコンを消す。
+    private func observeAppTermination() {
+        terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // 終了直後は AX リストがまだ更新途中の場合があるため短い遅延を挟む
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self?.forceRefresh()
+            }
+        }
     }
 
     /// NotchIndicatorPanel を生成してコールバックを設定する。
@@ -125,35 +147,55 @@ final class OverflowStatusManager {
     }
 
     func forceRefresh() {
-        lastHiddenCount = -1
+        // lastHiddenIDs はリセットしない。
+        // リセットすると「空→空」で変化なしと判定されてアイコン削除が反映されないバグが起きる。
+        // ID ベースの比較が自然に差分を検出するため、リセット不要。
+        #if DEBUG
+        ClickLog("[forceRefresh] lastHiddenIDs=\(lastHiddenIDs.count)")
+        #endif
         poll()
     }
 
     func displayItems(_ items: [MenuBarItem]) {
         assert(Thread.isMainThread)
+        lastHiddenIDs = []
         lastHiddenCount = -1
         update(hiddenItems: items)
     }
 
     private func update(hiddenItems: [MenuBarItem]) {
-        guard hiddenItems.count != lastHiddenCount else { return }
+        let newIDs = Set(hiddenItems.map(\.id))
+        #if DEBUG
+        ClickLog("[update] newIDs=\(newIDs.count) lastHiddenIDs=\(lastHiddenIDs.count) panelVisible=\(panelController?.isVisible == true)")
+        #endif
+        // アイテムの内容（ID セット）が変わった場合のみ更新する。
+        // カウントだけでは同数のまま中身が変わるケース（アプリ終了＋別アプリ起動）を検出できない。
+        guard newIDs != lastHiddenIDs else {
+            #if DEBUG
+            ClickLog("[update] SKIP (same IDs)")
+            #endif
+            return
+        }
+        lastHiddenIDs   = newIDs
         lastHiddenCount = hiddenItems.count
 
         if hiddenItems.isEmpty {
+            #if DEBUG
+            ClickLog("[update] -> exitOverflowMode + hidePanel(restoreIndicator:false)")
+            #endif
             exitOverflowMode()
-            // パネル表示中は自動クローズしない。
-            // ポーリングがアイテム消失を検出してもパネル操作中ならユーザーに委ねる。
-            if panelController?.isVisible != true {
-                panelController?.hidePanel()
-            }
+            // restoreIndicator: false = オーバーフロー終了時はインジケーターを復元しない。
+            // hidePanel completion が anchorPanel.orderFront を呼ぶと、exitOverflowMode() が
+            // 隠したインジケーターが再表示され、そこへのクリックでパネルが再オープンするバグを防ぐ。
+            panelController?.hidePanel(restoreIndicator: false)
         } else {
+            #if DEBUG
+            ClickLog("[update] -> enterOverflowMode + setItems(\(hiddenItems.count))")
+            #endif
             enterOverflowMode()
-            // パネル表示中は setItems/リサイズを実行しない。
-            // resizePanelAnimated がパネルフレームを動かすと、その瞬間のクリックが
-            // 枠外に外れてグローバルモニターが発火しパネルが閉じるバグを防ぐ。
-            if panelController?.isVisible != true {
-                panelController?.setItems(hiddenItems)
-            }
+            // パネル表示中でも setItems を呼び、消えたアイコンを即座に除去する。
+            // パネルが開いている間にアプリが終了した場合のユーザー体験を優先する。
+            panelController?.setItems(hiddenItems)
         }
     }
 
@@ -165,6 +207,10 @@ final class OverflowStatusManager {
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let notch  = NotchDetector.detect(on: screen)
+
+        #if DEBUG
+        ClickLog("[enterOverflowMode] hasNotch=\(notch.hasNotch) rightEdgeX=\(notch.rightEdgeX) indicatorPanel=\(indicatorPanel != nil)")
+        #endif
 
         // ノッチのある環境のみインジケーターを表示する。
         // ノッチなし環境では NSStatusItem ボタンがノッチに押し込まれることはないため
@@ -339,6 +385,9 @@ final class NotchIndicatorPanel: NSPanel {
 
     func showIfNeeded(notch: NotchInfo, screen: NSScreen) {
         reposition(notch: notch, screen: screen)
+        #if DEBUG
+        ClickLog("[showIfNeeded] isVisible=\(isVisible) frame=\(frame) alphaValue=\(alphaValue)")
+        #endif
         guard !isVisible else { return }
         alphaValue = 0
         orderFront(nil)
@@ -365,9 +414,9 @@ final class NotchIndicatorPanel: NSPanel {
 // canBecomeKey/Main を明示的に true にすることで、
 // makeKeyAndOrderFront(nil) が確実にこのパネルを keyWindow に昇格させる。
 //
-// sendEvent の override は rightMouseDown を横取りするためのもの。
-// gesture recognizer や NSView.rightMouseDown は nonactivating 系パネルで
-// システムに先取りされることがあるため、sendEvent レベルで捕捉する。
+// 右クリックは OverflowItemView.rightMouseDown で直接処理する。
+// このパネルは .borderless のみ（nonactivatingPanel でない）のため、
+// rightMouseDown は AppKit の通常ディスパッチ経由で NSView 層まで確実に届く。
 
 private final class OverflowPanel: NSPanel {
 
@@ -380,17 +429,9 @@ private final class OverflowPanel: NSPanel {
     // 「最初のクリックを活性化に消費しない」制御は
     // OverflowPanelContent / GearButton（NSView サブクラス）側で行う。
 
-    /// Called when a rightMouseDown event hits this window.
-    var onRightClick: ((NSPoint) -> Void)?
-
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .rightMouseDown, let handler = onRightClick {
-            let pt = contentView?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
-            handler(pt)
-            return   // consume — prevents system context-menu from appearing
-        }
-        super.sendEvent(event)
-    }
+    // Right-click events are handled by OverflowItemView.rightMouseDown directly.
+    // Routing via sendEvent + manual hitTest was fragile (coordinate conversion edge cases).
+    // super.sendEvent dispatches through AppKit's standard hitTest → rightMouseDown chain.
 
     #if DEBUG
     /// パネルが orderOut される瞬間をスタックトレースつきでログに残す。
@@ -469,14 +510,6 @@ final class OverflowPanelController: NSObject {
         panel.contentView               = panelContent
         super.init()
 
-        panel.onRightClick = { [weak self] pt in
-            guard let self else { return }
-            if let hit = self.panelContent.hitTest(pt),
-               let item = Self.findItemView(in: hit) {
-                item.triggerRightPress()
-            }
-        }
-
         panelContent.onResizeNeeded = { [weak self] size in
             self?.resizePanelAnimated(to: size)
         }
@@ -494,12 +527,24 @@ final class OverflowPanelController: NSObject {
     func setItems(_ items: [MenuBarItem]) {
         panelContent.setItems(items)
         let sz = panelContent.preferredSize
-        if !panel.isVisible {
+        if panel.isVisible {
+            // パネル表示中（アプリ終了などによる動的更新）はフレームを直接更新する。
+            // resizePanelAnimated はパネル位置を動かすためグローバルモニターが誤発火するリスクがある。
+            // ここでは幅・高さのみ変更し、アンカー基準の位置は positionPanel で再計算する。
+            var f = panel.frame
+            f.size = sz
+            // アンカー基準で下辺を固定したまま幅を変える（パネルが左方向に広がる想定）
+            panel.setFrame(f, display: true, animate: false)
+        } else {
             panel.setContentSize(sz)
         }
     }
 
     func showPanel(anchoredTo anchor: NSWindow?) {
+        #if DEBUG
+        let caller = Thread.callStackSymbols.dropFirst(1).prefix(3).joined(separator: "\n    ")
+        ClickLog("[showPanel] called  gen=\(panelGeneration)  caller=\n    \(caller)")
+        #endif
         // ① 残存する設定ポップオーバーを閉じる（前回 show で開いたまま残っている場合）。
         //   NSPopover ウィンドウが OverflowPanel より前面に残ると hitTest が届かなくなる。
         panelContent.closeSettingsPopoverIfNeeded()
@@ -533,6 +578,7 @@ final class OverflowPanelController: NSObject {
         //   activate() は AppKit 内部でイベントをポストするため、同一 run-loop ではまだ
         //   完了していない。async で 1 イテレーション後に makeKeyAndOrderFront を呼ぶことで
         //   activation 完了後に確実にキー化できる。
+        //
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -554,11 +600,16 @@ final class OverflowPanelController: NSObject {
         startMonitors()
     }
 
-    func hidePanel() {
+    /// パネルを閉じる。
+    /// - Parameter restoreIndicator: true（デフォルト）= 完了後にインジケーターパネルを復元する。
+    ///   オーバーフローアイテムが 0 件になった場合など、インジケーター自体が不要なときは false を渡す。
+    ///   false にすることで、exitOverflowMode() が隠したインジケーターを
+    ///   hidePanel completion が誤って再表示するレースコンディションを防ぐ。
+    func hidePanel(restoreIndicator: Bool = true) {
         #if DEBUG
         // 呼び出し元を特定するためスタックの2フレーム目（呼び出し元）を記録する
         let caller = Thread.callStackSymbols.dropFirst().first ?? "unknown"
-        ClickLog("[hidePanel] called  caller=\(caller)  panel.isVisible=\(panel.isVisible)")
+        ClickLog("[hidePanel] called  caller=\(caller)  panel.isVisible=\(panel.isVisible)  restoreIndicator=\(restoreIndicator)")
         #endif
         // 設定ポップオーバーが開いていれば先に閉じる。
         // NSPopover ウィンドウが OverflowPanel より前面に残ると、次回 showPanel 時に
@@ -569,6 +620,7 @@ final class OverflowPanelController: NSObject {
         // 世代番号を保持する。完了ハンドラ発火時点で世代が変わっていれば
         // showPanel が呼ばれた後なので orderOut をスキップして panel を生かす。
         let gen = panelGeneration
+        let shouldRestoreIndicator = restoreIndicator
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.12
             panel.animator().alphaValue = 0
@@ -583,12 +635,14 @@ final class OverflowPanelController: NSObject {
             }
             self.panel.orderOut(nil)
             self.panel.alphaValue = 1
-            // showPanel で隠した ▾ インジケーターを再表示する。
-            // OverflowStatusManager のポーリングよりも即座に戻す。
-            // orderFront の override 内でも preventWindowOrdering を呼ぶが、
-            // ここでも明示的に呼ぶことで OverflowPanel の keyWindow 状態を確実に守る。
-            self.anchorPanel?.orderFront(nil)
-            NSApp.preventWindowOrdering()
+            if shouldRestoreIndicator {
+                // showPanel で隠した ▾ インジケーターを再表示する。
+                // OverflowStatusManager のポーリングよりも即座に戻す。
+                // orderFront の override 内でも preventWindowOrdering を呼ぶが、
+                // ここでも明示的に呼ぶことで OverflowPanel の keyWindow 状態を確実に守る。
+                self.anchorPanel?.orderFront(nil)
+                NSApp.preventWindowOrdering()
+            }
             self.anchorPanel = nil
         }
     }
@@ -619,13 +673,99 @@ final class OverflowPanelController: NSObject {
         #endif
         guard let element = item.axElement else { return }
         _ = item.bundleID  // retained for future logging
+        let itemFrame = item.frame   // capture value type before dispatch
+        let itemBundle = item.bundleID ?? "?"
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            #if DEBUG
+            // 要素がサポートするアクション一覧をログ出力（診断用）
+            var actionNamesRef: CFArray?
+            if AXUIElementCopyActionNames(element, &actionNamesRef) == .success,
+               let names = actionNamesRef as? [String] {
+                ClickLog("[activateItem] \(itemBundle) supportedActions=\(names)")
+            } else {
+                ClickLog("[activateItem] \(itemBundle) supportedActions=UNKNOWN")
+            }
+            // 全 AX 属性をダンプ（AXMenu などの有無を確認する）
+            var attrNamesRef: CFArray?
+            if AXUIElementCopyAttributeNames(element, &attrNamesRef) == .success,
+               let attrNames = attrNamesRef as? [String] {
+                ClickLog("[activateItem] \(itemBundle) attributes=\(attrNames)")
+                // AXMenu 属性が存在する場合はその内容もダンプ
+                if attrNames.contains("AXMenu") {
+                    var menuRef: CFTypeRef?
+                    let menuResult = AXUIElementCopyAttributeValue(element, "AXMenu" as CFString, &menuRef)
+                    ClickLog("[activateItem] \(itemBundle) AXMenu result=\(menuResult.rawValue) value=\(menuRef as Any)")
+                    if let menu = menuRef, menuResult == .success {
+                        var childrenRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(menu as! AXUIElement, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                           let children = childrenRef as? [AXUIElement] {
+                            ClickLog("[activateItem] \(itemBundle) AXMenu children count=\(children.count)")
+                            for child in children {
+                                var titleRef: CFTypeRef?
+                                let t = AXUIElementCopyAttributeValue(child, kAXTitleAttribute as CFString, &titleRef) == .success ? (titleRef as? String ?? "?") : "?"
+                                ClickLog("[activateItem]   menuItem title='\(t)'")
+                            }
+                        }
+                    }
+                }
+            }
+            // 要素の現在 AX 位置も確認
+            var posRef2: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef2) == .success,
+               let pv = posRef2 {
+                var axPos = CGPoint.zero
+                AXValueGetValue(pv as! AXValue, .cgPoint, &axPos)
+                ClickLog("[activateItem] \(itemBundle) axPos=\(axPos) itemFrame.midX=\(itemFrame.midX)")
+            }
+            #endif
             if showMenu {
-                // First try AXShowMenu; if unsupported, synthesize a CGEvent right-click
-                // at the element's actual screen position.
-                let axResult = AXUIElementPerformAction(element, "AXShowMenu" as CFString)
-                if axResult != .success {
-                    Self.synthesizeRightClick(on: element)
+                // 右クリック（メニュー表示）フォールバックチェーン:
+                //
+                // 1. AXShowMenu on button — AX API で直接要求
+                // 2. AXShowMenu on AXParent — 親要素（NSStatusBarWindow）への試行
+                // 3. AXShowMenu on AXWindow — ウィンドウ要素への試行
+                // 4. カスタムコンテキストメニュー — Toggle / Quit などを提供するフォールバック
+                //
+                // 注: macOS Tahoe では hidden な NSStatusBarWindow が layer=0 に降格され
+                //     CGEvent による右クリック合成はすべて ControlCenter(layer=25) に
+                //     横取りされるため、CGEvent 合成は採用しない。
+
+                var handled = false
+
+                // 1. AXShowMenu on button
+                if AXUIElementPerformAction(element, "AXShowMenu" as CFString) == .success {
+                    handled = true
+                }
+
+                // 2. AXShowMenu on AXParent
+                if !handled {
+                    var parentRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parentRef) == .success,
+                       let p = parentRef, CFGetTypeID(p) == AXUIElementGetTypeID() {
+                        if AXUIElementPerformAction(p as! AXUIElement, "AXShowMenu" as CFString) == .success {
+                            handled = true
+                        }
+                    }
+                }
+
+                // 3. AXShowMenu on AXWindow
+                if !handled {
+                    var windowRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &windowRef) == .success,
+                       let w = windowRef, CFGetTypeID(w) == AXUIElementGetTypeID() {
+                        if AXUIElementPerformAction(w as! AXUIElement, "AXShowMenu" as CFString) == .success {
+                            handled = true
+                        }
+                    }
+                }
+
+                #if DEBUG
+                ClickLog("[activateItem] \(itemBundle) AXShowMenu chain handled=\(handled)")
+                #endif
+
+                // 4. フォールバック: カスタムコンテキストメニュー
+                if !handled {
+                    Self.showFallbackMenu(for: item, element: element)
                 }
             } else {
                 let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
@@ -636,8 +776,68 @@ final class OverflowPanelController: NSObject {
         }
     }
 
-    /// Synthesizes a system-level right mouse click at the center of the given AX element.
+    // MARK: - Fallback context menu
+
+    /// AXShowMenu が使えない場合に MenuBarDockX 独自のコンテキストメニューを表示する。
+    /// Toggle（左クリック相当）・Quit の最低限のメニューを提供する。
+    private static func showFallbackMenu(for item: MenuBarItem, element: AXUIElement) {
+        var ownerPID: pid_t = 0
+        AXUIElementGetPid(element, &ownerPID)
+
+        let appName = item.appName.isEmpty ? (item.bundleID ?? "App") : item.appName
+        let menu = NSMenu(title: appName)
+
+        // ヘッダー（アプリ名・無効）
+        let header = NSMenuItem(title: appName, action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        if let bundleID = item.bundleID,
+           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            header.image = NSWorkspace.shared.icon(forFile: url.path)
+            header.image?.size = NSSize(width: 16, height: 16)
+        }
+        menu.addItem(header)
+        menu.addItem(.separator())
+
+        // Toggle（左クリック相当）
+        let toggleItem = NSMenuItem(
+            title: L("Toggle", "トグル"),
+            action: #selector(FallbackMenuActionHandler.handleToggle(_:)),
+            keyEquivalent: "")
+        toggleItem.representedObject = element
+        toggleItem.target = FallbackMenuActionHandler.shared
+        menu.addItem(toggleItem)
+
+        menu.addItem(.separator())
+
+        // Quit
+        if ownerPID != 0 {
+            let quitItem = NSMenuItem(
+                title: L("Quit \(appName)", "\(appName) を終了"),
+                action: #selector(FallbackMenuActionHandler.handleQuit(_:)),
+                keyEquivalent: "")
+            quitItem.representedObject = ownerPID as AnyObject
+            quitItem.target = FallbackMenuActionHandler.shared
+            menu.addItem(quitItem)
+        }
+
+        // カーソル位置の下にポップアップ
+        let cursorAppKit = NSEvent.mouseLocation
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: cursorAppKit.x, y: cursorAppKit.y),
+                   in: nil)
+        #if DEBUG
+        ClickLog("[showFallbackMenu] \(appName) appName shown at \(cursorAppKit)")
+        #endif
+    }
+
+    /// Synthesizes a right mouse click at the center of the given AX element.
     /// Used as a fallback when AXShowMenu is not supported by the element's process.
+    ///
+    /// Ice/Thaw OSS の実装に倣い:
+    ///  1. CGWindowListCopyWindowInfo でアイコンの CGWindowID を取得
+    ///  2. イベントに windowID・mouseEventWindowUnderMousePointer を明示指定
+    ///  3. イベント抑制を解除した上で sessionEventTap で送信
+    /// これにより座標ベースのヒットテストをバイパスして確実にターゲットウィンドウへ届ける。
     private static func synthesizeRightClick(on element: AXUIElement) {
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
@@ -650,16 +850,133 @@ final class OverflowPanelController: NSObject {
         AXValueGetValue(pv as! AXValue, .cgPoint, &pos)
         AXValueGetValue(sv as! AXValue, .cgSize,  &size)
 
-        // AX coordinates: origin top-left, y increases downward (same as CGEvent HID tap)
+        // AX 座標系: 原点 = 画面左上、Y 軸は下向き
         let pt = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
 
-        let src  = CGEventSource(stateID: .hidSystemState)
-        let down = CGEvent(mouseEventSource: src, mouseType: .rightMouseDown,
-                           mouseCursorPosition: pt, mouseButton: .right)
-        let up   = CGEvent(mouseEventSource: src, mouseType: .rightMouseUp,
-                           mouseCursorPosition: pt, mouseButton: .right)
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        // ① アイコンが属するウィンドウの CGWindowID を CGWindowList から取得
+        //   座標が一致するウィンドウを探す（オーナー PID も参照して絞り込む）
+        var ownerPID: pid_t = 0
+        AXUIElementGetPid(element, &ownerPID)
+        let windowID = Self.findWindowID(near: pos, size: size, ownerPID: ownerPID)
+
+        // ② イベント抑制を解除する
+        //   macOS は合成イベント送信直後の短い時間ウィンドウで後続イベントを抑制するため
+        //   これを解除しないとメニューが開かない（Ice/Thaw OSS で確認済みの必須設定）。
+        let src = CGEventSource(stateID: .combinedSessionState)
+        let permitAll: CGEventFilterMask = [
+            .permitLocalMouseEvents,
+            .permitLocalKeyboardEvents,
+            .permitSystemDefinedEvents
+        ]
+        src?.setLocalEventsFilterDuringSuppressionState(
+            permitAll, state: .eventSuppressionStateRemoteMouseDrag)
+        src?.setLocalEventsFilterDuringSuppressionState(
+            permitAll, state: .eventSuppressionStateSuppressionInterval)
+        src?.localEventsSuppressionInterval = 0
+
+        guard let down = CGEvent(mouseEventSource: src, mouseType: .rightMouseDown,
+                                 mouseCursorPosition: pt, mouseButton: .right),
+              let up   = CGEvent(mouseEventSource: src, mouseType: .rightMouseUp,
+                                 mouseCursorPosition: pt, mouseButton: .right) else { return }
+
+        // ③ カーソルをアイコン位置にワープ → postToPid でプロセスに直接注入 → カーソル復元
+        //
+        //    背景:
+        //    - postToPid でイベントを注入しても、受け取り側は「現在のハードウェアカーソル位置」
+        //      でウィンドウを探す。カーソルがパネル上にある場合は NSStatusBarWindow に届かない。
+        //    - 先にカーソルを AX 座標へワープしてからイベントを注入することで、
+        //      受け取り側アプリが自プロセスの NSStatusBarWindow を正しく見つけられる。
+        //    - ControlCenter (layer=25) は他プロセスのイベントキューには影響しないため
+        //      postToPid なら ControlCenter をバイパスできる。
+        //    - ワープ → 注入 → 復元 を 20ms 以内に完了することでカーソルジャンプを最小化する。
+        down.setIntegerValueField(.mouseEventClickState, value: 1)
+        up.setIntegerValueField(.mouseEventClickState, value: 1)
+
+        // 現在カーソル位置を保存（AppKit 座標 y=底起点 → Quartz 座標 y=上起点 に変換）
+        let savedAppKit = NSEvent.mouseLocation
+        let screenH = NSScreen.main?.frame.height ?? 900
+        let savedQuartz = CGPoint(x: savedAppKit.x, y: screenH - savedAppKit.y)
+
+        // カーソルをアイコン中心にワープ
+        CGWarpMouseCursorPosition(pt)
+
+        // プロセスに直接注入
+        down.postToPid(ownerPID)
+        up.postToPid(ownerPID)
+
+        #if DEBUG
+        ClickLog("[synthesizeRightClick] warp+postToPid ownerPID=\(ownerPID) pt=\(pt) savedCursor=\(savedQuartz)")
+        #endif
+
+        // カーソルを元の位置に復元（20ms後）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            CGWarpMouseCursorPosition(savedQuartz)
+        }
+    }
+
+    /// CGWindowListCopyWindowInfo でアイコン座標付近のウィンドウ ID を探す。
+    /// オーナー PID が一致するものを優先し、次に座標が含まれるものを返す。
+    private static func findWindowID(near origin: CGPoint,
+                                     size: CGSize,
+                                     ownerPID: pid_t) -> CGWindowID? {
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements],
+            kCGNullWindowID) as? [[String: Any]] else { return nil }
+
+        // アイコンの矩形（AX 座標系）
+        let iconRect = CGRect(origin: origin, size: size)
+
+        #if DEBUG
+        // メニューバー付近（y < 40）の全ウィンドウをダンプして環境を把握する
+        let menuBarWindows = list.filter { info in
+            guard let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let y = boundsDict["Y"], let h = boundsDict["Height"] else { return false }
+            return y < 40 || (y < 0 && y + h > 0)
+        }
+        for info in menuBarWindows {
+            let bounds = info[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
+            let x = bounds["X"] ?? 0; let y = bounds["Y"] ?? 0
+            let w = bounds["Width"] ?? 0; let h = bounds["Height"] ?? 0
+            let wnum = info[kCGWindowNumber as String] as? Int ?? -1
+            let pid  = info[kCGWindowOwnerPID as String] as? Int ?? -1
+            let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
+            let name  = info[kCGWindowName as String] as? String ?? ""
+            let layer = info[kCGWindowLayer as String] as? Int ?? -1
+            ClickLog("[menuBarWin] id=\(wnum) pid=\(pid) owner='\(owner)' name='\(name)' layer=\(layer) rect=(\(x),\(y),\(w),\(h))")
+        }
+        #endif
+
+        var bestID: CGWindowID?
+        var bestScore = -1
+
+        for info in list {
+            guard let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = boundsDict["X"], let y = boundsDict["Y"],
+                  let w = boundsDict["Width"], let h = boundsDict["Height"],
+                  let wnum = info[kCGWindowNumber as String] as? Int else { continue }
+
+            let windowRect = CGRect(x: x, y: y, width: w, height: h)
+            guard windowRect.intersects(iconRect) else { continue }
+
+            let pid = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
+            var score = 0
+            if pid == ownerPID { score += 2 }
+            if windowRect.contains(iconRect.center) { score += 1 }
+
+            if score > bestScore {
+                bestScore = score
+                bestID = CGWindowID(wnum)
+                #if DEBUG
+                let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
+                let name  = info[kCGWindowName as String] as? String ?? ""
+                ClickLog("[findWindowID] → candidate id=\(wnum) pid=\(pid) owner='\(owner)' name='\(name)' rect=(\(x),\(y),\(w),\(h)) score=\(score)")
+                #endif
+            }
+        }
+        #if DEBUG
+        ClickLog("[findWindowID] origin=\(origin) ownerPID=\(ownerPID) → windowID=\(bestID as Any) score=\(bestScore)")
+        #endif
+        return bestID
     }
 
     private func positionPanel(anchoredTo anchor: NSWindow?) {
@@ -759,15 +1076,6 @@ final class OverflowPanelController: NSObject {
         localLeftMonitor = nil
     }
 
-    /// Walk up the view hierarchy from `view` to find an OverflowItemView.
-    private static func findItemView(in view: NSView) -> OverflowItemView? {
-        var v: NSView? = view
-        while let current = v {
-            if let item = current as? OverflowItemView { return item }
-            v = current.superview
-        }
-        return nil
-    }
 }
 
 // MARK: - PassthroughView ─────────────────────────────────────────────────────
@@ -2396,6 +2704,9 @@ final class OverflowItemView: NSView {
         overlay.beginInteractiveReorder(startIndex: idx, startEvent: event)
     }
 
+    // 非アクティブ状態でのクリック（左右両方）を活性化消費せずそのままビューに届ける。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     // MARK: - Click
 
     @objc private func handleLeftClick() {
@@ -2404,7 +2715,13 @@ final class OverflowItemView: NSView {
         flashAndCall(onPress)
     }
 
-    /// Called by OverflowPanelController's local right-click monitor.
+    /// NSPanel の sendEvent 経由でなく AppKit の標準ディスパッチで届く。
+    /// OverflowPanel は NSPanel(.borderless) のため rightMouseDown は
+    /// NSView 層まで確実に伝達される（nonactivatingPanel でないため）。
+    override func rightMouseDown(with event: NSEvent) {
+        triggerRightPress()
+    }
+
     func triggerRightPress() {
         if isEditMode {
             // 編集モード中は flash しない。
@@ -2767,6 +3084,30 @@ final class OverflowSettingsViewController: NSViewController {
 //   layer.contentsRect でパネルの画面 X 位置に対応するスライスを指定。
 //   layer.contentsGravity = .resize で縦方向にストレッチ。
 //   → 水平方向はメニューバーの各位置と完全一致、縦は均一ストライプ。
+
+// MARK: - FallbackMenuActionHandler
+
+/// フォールバックコンテキストメニューのアクションを処理する Obj-C ターゲット。
+final class FallbackMenuActionHandler: NSObject {
+    static let shared = FallbackMenuActionHandler()
+    private override init() {}
+
+    /// Toggle（左クリック相当）: AXPress を実行する
+    @objc func handleToggle(_ sender: NSMenuItem) {
+        guard let element = sender.representedObject else { return }
+        AXUIElementPerformAction(element as! AXUIElement, kAXPressAction as CFString)
+    }
+
+    /// Quit: 対象アプリを終了する
+    @objc func handleQuit(_ sender: NSMenuItem) {
+        guard let pid = sender.representedObject as? pid_t else { return }
+        NSRunningApplication(processIdentifier: pid)?.terminate()
+        // アプリ終了後、少し待ってからパネルを即座に再スキャンしてアイコンを消す
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            OverflowStatusManager.shared.forceRefresh()
+        }
+    }
+}
 
 // MARK: - DebugLog ────────────────────────────────────────────────────────────
 #if DEBUG

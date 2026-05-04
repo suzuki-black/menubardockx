@@ -31,6 +31,7 @@ private extension NSStatusBar {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    #if DEBUG
     private static let debugLog = FileHandle(forWritingAtPath: {
         let path = "/tmp/mbdx_debug.log"
         FileManager.default.createFile(atPath: path, contents: nil)
@@ -41,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let line = "\(Date()) \(msg)\n"
         Self.debugLog?.write(line.data(using: .utf8)!)
     }
+    #else
+    private func dbg(_ msg: String) {}
+    #endif
 
     private var statusItem: NSStatusItem?
 
@@ -54,12 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // .accessory / .prohibited ポリシーのままだと NSApp.keyWindow が常に nil になり、
-        // OverflowPanel を makeKeyAndOrderFront しても keyWindow になれない。
-        // .regular に昇格することで keyWindow の取得が可能になる。
-        // ※ Dock アイコンが表示されるが、パネルが青くなる・歯車が 1 クリックで押せる
-        //   ことへの代償として許容する。
-        NSApp.setActivationPolicy(.regular)
+        // .accessory ポリシーで起動することで Dock アイコンを非表示にする。
+        // パネル表示時のみ OverflowPanelController.showPanel() 内で .regular に昇格し、
+        // パネルを閉じた後に再び .accessory に戻す（トグル方式）。
+        NSApp.setActivationPolicy(.accessory)
 
         // Terminate duplicate instances (can happen during development)
         let me = ProcessInfo.processInfo.processIdentifier
