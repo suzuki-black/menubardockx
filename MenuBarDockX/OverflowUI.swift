@@ -349,8 +349,9 @@ final class NotchIndicatorPanel: NSPanel {
     // MARK: - Private state
 
     /// メニューバー底辺より下にはみ出す量 (pt)。
-    /// この分だけパネルが下に伸び、三角形がメニューバーに近い位置に見える。
-    private let overhang: CGFloat = 6
+    /// 0 にすることでパネルがメニューバー内に完全に収まり、
+    /// 三角形が他のステータスアイコンと同じ高さに揃う。
+    private let overhang: CGFloat = 0
 
     private let symbolView = IndicatorSymbolView()
 
