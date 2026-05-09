@@ -227,6 +227,90 @@ final class OverflowStatusManager {
     }
 }
 
+// MARK: - IndicatorSymbolView ─────────────────────────────────────────────────
+//
+// インジケーター三角形を描画するカスタム NSView。
+//
+// ・SF Symbol "arrowtriangle.down.fill" を使用（テキスト ▾ より大きく鮮明）
+// ・ダーク/ライトモードの自動切替: viewDidChangeEffectiveAppearance で随時更新
+//   - Dark  → white 0.90 alpha
+//   - Light → near-black 0.80 alpha
+// ・NSShadow でわずかなドロップシャドウを付与し浮き出て見えるようにする
+// ・mouseDown / rightMouseDown をコールバック経由で親パネルに委譲する
+
+private final class IndicatorSymbolView: NSView {
+
+    var onLeftClick:  (() -> Void)?
+    var onRightClick: ((NSEvent) -> Void)?
+
+    private let imageView = NSImageView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        imageView.imageScaling   = .scaleNone
+        imageView.imageAlignment = .alignCenter
+        addSubview(imageView)
+        refreshAppearance()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    // MARK: Appearance
+
+    func refreshAppearance() {
+        // SF Symbol — pointSize 13 / bold でテキスト ▾ より明確に大きく見える
+        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .bold)
+        if let sym = NSImage(systemSymbolName: "arrowtriangle.down.fill",
+                             accessibilityDescription: nil)?
+                        .withSymbolConfiguration(cfg) {
+            imageView.image = sym
+        }
+
+        // 輝度ベースのコントラスト色
+        //   Dark  → 白系で目立つ
+        //   Light → 暗色で目立つ
+        let isDark = effectiveAppearance
+            .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        imageView.contentTintColor = isDark
+            ? NSColor.white.withAlphaComponent(0.90)
+            : NSColor(white: 0.08, alpha: 0.82)
+
+        // ドロップシャドウ（メニューバー背景に溶け込まないよう輪郭を強調）
+        let shadow = NSShadow()
+        shadow.shadowColor      = NSColor.black.withAlphaComponent(isDark ? 0.55 : 0.25)
+        shadow.shadowBlurRadius = 3
+        shadow.shadowOffset     = NSSize(width: 0, height: -1)
+        imageView.shadow = shadow
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshAppearance()
+    }
+
+    // MARK: Layout
+
+    override func layout() {
+        super.layout()
+        // imageView をパネル全体に広げる。
+        // パネルはメニューバー高さ + overhang 分だけ下に伸びているため、
+        // 画像の中心がちょうどメニューバー底辺付近に来る。
+        imageView.frame = bounds
+    }
+
+    // MARK: Mouse events
+
+    // acceptsFirstMouse: パネルが非アクティブでも mouseDown を受け取れるようにする
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        onLeftClick?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?(event)
+    }
+}
+
 // MARK: - NotchIndicatorPanel ─────────────────────────────────────────────────
 //
 // NSPanel ベースのノッチ境界インジケーター（セカンダリバー方式）。
@@ -244,12 +328,14 @@ final class OverflowStatusManager {
 //
 // 表示位置:
 //   X: notchInfo.rightEdgeX（ノッチ右端の直後、システムアイコンより左）
-//   Y: screen.frame.maxY - menuBarHeight（メニューバー領域の底辺 = フレームの minY）
-//   W: 30pt / H: menuBarHeight
+//   Y: screen.frame.maxY - menuBarH - overhang
+//      パネルをメニューバー底辺より overhang(6pt) 分だけ下に伸ばすことで、
+//      三角形がメニューバー底辺のすぐ下に "ぶら下がる" 形で表示される。
+//   W: 32pt / H: menuBarH + overhang
 //
 // クリック処理:
-//   左クリック → onLeftClick() → オーバーフローパネルをトグル
-//   右クリック → onRightClick() → NSStatusItem の設定メニューをポップアップ
+//   左クリック → IndicatorSymbolView.mouseDown → onLeftClick() → パネルをトグル
+//   右クリック → sendEvent / localMonitor → onRightClick() → 設定メニュー
 //   ※ rightMouseDown は NSPanel.sendEvent でキャプチャする（nonactivatingPanel では
 //      NSView 層に届く前にシステムに横取りされることがあるため）
 
@@ -262,23 +348,11 @@ final class NotchIndicatorPanel: NSPanel {
 
     // MARK: - Private state
 
-    /// ▾ を表示するボタン。
-    /// attributedTitle で NSColor.labelColor を指定し、ダーク/ライト両対応とする。
-    private let guilemetButton: NSButton = {
-        let btn = NSButton()
-        btn.bezelStyle    = .regularSquare
-        btn.isBordered    = false
-        btn.setButtonType(.momentaryPushIn)
-        // attributedTitle でフォントと色を明示指定（labelColor = 環境に応じた適切なコントラスト）
-        btn.attributedTitle = NSAttributedString(
-            string: "▾",
-            attributes: [
-                .foregroundColor: NSColor.labelColor,
-                .font:            NSFont.systemFont(ofSize: 16, weight: .semibold)
-            ]
-        )
-        return btn
-    }()
+    /// メニューバー底辺より下にはみ出す量 (pt)。
+    /// この分だけパネルが下に伸び、三角形がメニューバーに近い位置に見える。
+    private let overhang: CGFloat = 6
+
+    private let symbolView = IndicatorSymbolView()
 
     /// ローカルイベントモニター（右クリック用）。
     /// sendEvent が呼ばれない場合（システムによる横取り等）のバックアップ。
@@ -297,29 +371,22 @@ final class NotchIndicatorPanel: NSPanel {
         backgroundColor    = .clear
         hasShadow          = false
         ignoresMouseEvents = false
-        hidesOnDeactivate  = false   // OverflowPanel と同様、自前で表示管理する
+        hidesOnDeactivate  = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-        guilemetButton.target = self
-        guilemetButton.action = #selector(leftClicked)
-        // leftMouseDown でアクションを発火させる。
-        // leftMouseUp にしていると OS が mouseDown を「ハイライト処理」に消費し、
-        // パネルが mouseUp まで開かれない → makeKey() が遅れてパネルが非アクティブのまま残る。
-        // mouseDown で開くことで showPanel 内の makeKey() が即座に機能し、
-        // パネルが最初から keyWindow になる。
-        guilemetButton.sendAction(on: [.leftMouseDown])
-        contentView = guilemetButton
+        // 左クリック → symbolView 経由で受け取る
+        symbolView.onLeftClick  = { [weak self] in self?.onLeftClick?() }
+        symbolView.onRightClick = { [weak self] event in self?.onRightClick?(event) }
+        contentView = symbolView
 
         // 右クリックのローカルモニターを常時登録する。
         // nonactivatingPanel では sendEvent が rightMouseDown を受け取れない場合があるため
         // (メニューバー領域の右クリックをシステムが横取りするケースへの対処)。
-        // モニター内でフレーム判定を行い、自パネル上のクリックのみを処理する。
         rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
             guard let self, self.isVisible else { return event }
-            // NSEvent.mouseLocation: マウスカーソルの現在位置 (スクリーン座標, Cocoa 系 y↑)
             guard self.frame.contains(NSEvent.mouseLocation) else { return event }
             self.onRightClick?(event)
-            return nil  // イベントを消費してシステムのコンテキストメニューを抑制
+            return nil
         }
     }
 
@@ -329,16 +396,9 @@ final class NotchIndicatorPanel: NSPanel {
 
     // MARK: Key / Main window policy
 
-    // ▾ インジケーターは「トリガースイッチ」に徹する。
-    // canBecomeKey = false にすることで、▾ クリック時に NotchIndicatorPanel が
-    // キーウィンドウを奪わないようにする。
-    // キーウィンドウは OverflowPanel だけが保持する。
     override var canBecomeKey:  Bool { false }
     override var canBecomeMain: Bool { false }
 
-    // orderFront / orderFrontRegardless の後に必ず preventWindowOrdering を呼ぶ。
-    // これにより OverflowPanel を閉じた直後にギルメットパネルが再表示されても
-    // フォーカスを奪うことが物理的に不可能になる。
     override func orderFront(_ sender: Any?) {
         super.orderFront(sender)
         NSApp.preventWindowOrdering()
@@ -351,12 +411,10 @@ final class NotchIndicatorPanel: NSPanel {
 
     // MARK: Event handling
 
-    /// guilemetButton（contentView）にイベントを正しく流す。
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
     }
 
-    /// sendEvent でも rightMouseDown を捕捉する（ローカルモニターとの二重対策）。
     override func sendEvent(_ event: NSEvent) {
         if event.type == .rightMouseDown {
             onRightClick?(event)
@@ -365,20 +423,16 @@ final class NotchIndicatorPanel: NSPanel {
         super.sendEvent(event)
     }
 
-    @objc private func leftClicked() {
-        onLeftClick?()
-    }
-
     // MARK: Positioning
 
     /// ノッチ右端にパネルを配置する。
-    /// - Note: `NSStatusBar.system.thickness` は 22 を返すことがある（Apple の既知バグ）。
-    ///         `screen.frame.maxY - screen.visibleFrame.maxY` が正確なメニューバー高さ。
+    /// overhang 分だけメニューバー底辺より下に伸ばすことで、
+    /// 三角形がメニューバーに張り付いて見える。
     func reposition(notch: NotchInfo, screen: NSScreen) {
         let menuBarH = screen.frame.maxY - screen.visibleFrame.maxY
-        let x = notch.rightEdgeX          // ノッチ右端の直後（システムアイコンより左）
-        let y = screen.frame.maxY - menuBarH  // メニューバー領域の底辺
-        setFrame(NSRect(x: x, y: y, width: 30, height: menuBarH), display: false)
+        let x = notch.rightEdgeX
+        let y = screen.frame.maxY - menuBarH - overhang
+        setFrame(NSRect(x: x, y: y, width: 32, height: menuBarH + overhang), display: false)
     }
 
     // MARK: Show / Hide
