@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import SwiftUI
 
 private extension CGRect {
     var center: CGPoint { CGPoint(x: midX, y: midY) }
@@ -34,16 +35,12 @@ enum NotchDetector {
 
 // MARK: - OverflowStatusManager ───────────────────────────────────────────────
 //
-// セカンダリバー方式への移行:
-//
-// 旧方式: AppDelegate の NSStatusItem ボタンを直接 ▾ に書き換えて overflow を示した。
-//   問題: macOS 26 では NSStatusItem の priority 制御が効かず、
-//         バーが混雑すると自アイコンもノッチ内に押し込まれて不可視になる。
-//
-// 新方式: NotchIndicatorPanel (NSPanel, level=26) を notchInfo.rightEdgeX に固定配置。
-//   利点: NSStatusItem の並び順・優先度と完全に独立しているため、
-//         何個アイコンが追加されてもノッチ境界に確実に ▾ が表示される。
-//   NSStatusItem はメニュー（設定・終了）専用として引き続き存在し、一切変更しない。
+// アイコン切替方式（AppKit 純正）:
+//   SwiftUI MenuBarExtra は使用しない。
+//   隠れたアイコンが検出されたとき、既存の NSStatusItem のアイコンを ▾ に切り替える。
+//   切替は onOverflowModeChanged コールバック経由で AppDelegate が担当する。
+//   dead zone（ノッチ内）に押し出された場合も selfInDeadZone フラグで検出し、
+//   ▾ 状態を維持する。パネルはグローバルショートカット ⌃⌥⌘M でも開ける。
 
 final class OverflowStatusManager {
 
@@ -54,12 +51,16 @@ final class OverflowStatusManager {
     /// AppDelegate の statusItem への弱参照（設定メニューのポップアップに使用）。
     weak var appStatusItem: NSStatusItem?
 
+    /// overflow mode の ON/OFF が切り替わったとき AppDelegate に通知するコールバック。
+    /// メインスレッドから呼ばれる。
+    var onOverflowModeChanged: ((Bool) -> Void)?
+
     private var panelController: OverflowPanelController?
-    private var indicatorPanel:  NotchIndicatorPanel?
     private var pollTimer: Timer?
     private var lastHiddenIDs: Set<UUID> = []
     private var lastHiddenCount = -1
-    private var isOverflowMode  = false
+    private var lastSelfInDeadZone = false
+    private(set) var isOverflowMode = false
     private var terminationObserver: Any?
 
     private init() {}
@@ -67,10 +68,25 @@ final class OverflowStatusManager {
     func start(with enumerator: MenuBarEnumerator, statusItem: NSStatusItem) {
         self.enumerator    = enumerator
         self.appStatusItem = statusItem
-        panelController    = OverflowPanelController()
-        indicatorPanel     = makeIndicatorPanel()
+        panelController = OverflowPanelController()
         schedulePoll()
         observeAppTermination()
+    }
+
+    /// ▾ クリックまたはグローバルショートカットから呼ばれる。
+    /// パネルが開いていれば閉じ、閉じていれば開く。
+    func togglePanel() {
+        guard let pc = panelController else { return }
+        if pc.isVisible {
+            pc.hidePanel()
+        } else {
+            // NSStatusItem のウィンドウを anchor として渡す。
+            // dead zone にある場合は positionPanel 内で visible zone 右端にフォールバックする。
+            pc.showPanel(anchoredTo: appStatusItem?.button?.window)
+        }
+        #if DEBUG
+        ClickLog("[togglePanel] panelWasVisible=\(pc.isVisible)")
+        #endif
     }
 
     /// アプリ終了を即座に検知してパネルを更新する。
@@ -86,36 +102,6 @@ final class OverflowStatusManager {
                 self?.forceRefresh()
             }
         }
-    }
-
-    /// NotchIndicatorPanel を生成してコールバックを設定する。
-    private func makeIndicatorPanel() -> NotchIndicatorPanel {
-        let panel = NotchIndicatorPanel()
-
-        // 左クリック: オーバーフローパネルをトグル
-        panel.onLeftClick = { [weak self, weak panel] in
-            guard let self, let pc = self.panelController else { return }
-            if pc.isVisible {
-                pc.hidePanel()
-            } else {
-                // アンカーを indicator panel にすることで
-                // オーバーフローパネルがノッチ境界付近に表示される
-                pc.showPanel(anchoredTo: panel)
-            }
-        }
-
-        // 右クリック: NSStatusItem の設定メニューをポップアップ
-        // popUp(positioning:at:in:) は nonactivatingPanel 内ビューでは位置計算が不安定なため
-        // NSMenu.popUpContextMenu(_:with:for:) でイベントオブジェクトを直接渡す方式を使う。
-        panel.onRightClick = { [weak self, weak panel] event in
-            guard let self, let view = panel?.contentView else { return }
-            // AppDelegate は statusItem.menu にメニューをセットしている。
-            // statusItem.button.menu は別プロパティで nil のため、statusItem.menu を優先して使う。
-            guard let menu = self.appStatusItem?.menu ?? self.appStatusItem?.button?.menu else { return }
-            NSMenu.popUpContextMenu(menu, with: event, for: view)
-        }
-
-        return panel
     }
 
     func stop() {
@@ -134,6 +120,21 @@ final class OverflowStatusManager {
 
     private func poll() {
         guard let enumerator else { return }
+
+        // 自分自身の NSStatusItem が dead zone / ノッチゾーンに入っていないか確認する。
+        // ・x < 10          : 完全にオフスクリーン
+        // ・x < rightEdge+40: ノッチゾーン内（x≈618 付近が典型）
+        // どちらも「見えない」ため overflow 扱いにする。
+        let ownX = appStatusItem?.button?.window?.frame.origin.x ?? 9999
+        let notchInfo = NotchDetector.detect()
+        // 他アプリの隠れアイテム判定とは異なり、自分自身の可視判定には +40 マージンを使わない。
+        // rightEdgeX より右にいれば確実に可視ゾーン。
+        let selfInDeadZone = ownX < 10
+            || (notchInfo.hasNotch && ownX > 0 && ownX < notchInfo.rightEdgeX)
+        #if DEBUG
+        ClickLog("[poll] ownX=\(Int(ownX)) rightEdge=\(Int(notchInfo.rightEdgeX)) selfInDeadZone=\(selfInDeadZone)")
+        #endif
+
         DispatchQueue.global(qos: .utility).async { [weak self] in
             // 保存済み DTO を渡して categoryID・ID を再起動後も復元する。
             let dtos = DataStore.shared.loadItemDTOs()
@@ -142,7 +143,9 @@ final class OverflowStatusManager {
             hidden.append(contentsOf: DebugSettings.shared.makeDummyHiddenItems())
             DebugSettings.shared.prependPinnedItems(to: &hidden, using: enumerator)
             #endif
-            DispatchQueue.main.async { self?.update(hiddenItems: hidden) }
+            DispatchQueue.main.async {
+                self?.update(hiddenItems: hidden, selfInDeadZone: selfInDeadZone)
+            }
         }
     }
 
@@ -163,30 +166,32 @@ final class OverflowStatusManager {
         update(hiddenItems: items)
     }
 
-    private func update(hiddenItems: [MenuBarItem]) {
+    private func update(hiddenItems: [MenuBarItem], selfInDeadZone: Bool = false) {
         let newIDs = Set(hiddenItems.map(\.id))
+        // 自分が dead zone に入っている場合は「overflow あり」として扱う。
+        // 他アプリのアイコンが全部 visible zone に収まっていても
+        // MenuBarDockX 自体が見えなくなっているため ▼ への切り替えが必要。
+        let effectivelyOverflow = !hiddenItems.isEmpty || selfInDeadZone
         #if DEBUG
-        ClickLog("[update] newIDs=\(newIDs.count) lastHiddenIDs=\(lastHiddenIDs.count) panelVisible=\(panelController?.isVisible == true)")
+        ClickLog("[update] newIDs=\(newIDs.count) selfInDeadZone=\(selfInDeadZone) lastHiddenIDs=\(lastHiddenIDs.count) panelVisible=\(panelController?.isVisible == true)")
         #endif
-        // アイテムの内容（ID セット）が変わった場合のみ更新する。
-        // カウントだけでは同数のまま中身が変わるケース（アプリ終了＋別アプリ起動）を検出できない。
-        guard newIDs != lastHiddenIDs else {
+        // アイテムの内容（ID セット）と selfInDeadZone が変わった場合のみ更新する。
+        let stateChanged = newIDs != lastHiddenIDs || selfInDeadZone != lastSelfInDeadZone
+        guard stateChanged else {
             #if DEBUG
-            ClickLog("[update] SKIP (same IDs)")
+            ClickLog("[update] SKIP (same state)")
             #endif
             return
         }
-        lastHiddenIDs   = newIDs
-        lastHiddenCount = hiddenItems.count
+        lastHiddenIDs      = newIDs
+        lastHiddenCount    = hiddenItems.count
+        lastSelfInDeadZone = selfInDeadZone
 
-        if hiddenItems.isEmpty {
+        if !effectivelyOverflow {
             #if DEBUG
             ClickLog("[update] -> exitOverflowMode + hidePanel(restoreIndicator:false)")
             #endif
             exitOverflowMode()
-            // restoreIndicator: false = オーバーフロー終了時はインジケーターを復元しない。
-            // hidePanel completion が anchorPanel.orderFront を呼ぶと、exitOverflowMode() が
-            // 隠したインジケーターが再表示され、そこへのクリックでパネルが再オープンするバグを防ぐ。
             panelController?.hidePanel(restoreIndicator: false)
         } else {
             #if DEBUG
@@ -194,309 +199,48 @@ final class OverflowStatusManager {
             #endif
             enterOverflowMode()
             // パネル表示中でも setItems を呼び、消えたアイコンを即座に除去する。
-            // パネルが開いている間にアプリが終了した場合のユーザー体験を優先する。
             panelController?.setItems(hiddenItems)
         }
     }
 
-    // MARK: - Overflow mode (NotchIndicatorPanel show / hide)
+    // MARK: - Overflow mode (NSStatusItem アイコンを ▾ ↔ 通常アイコンに切り替える)
 
     private func enterOverflowMode() {
         guard !isOverflowMode else { return }
         isOverflowMode = true
-
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        let notch  = NotchDetector.detect(on: screen)
-
+        // AppDelegate の NSStatusItem アイコンを ▾ に変更してもらう
+        onOverflowModeChanged?(true)
         #if DEBUG
-        ClickLog("[enterOverflowMode] hasNotch=\(notch.hasNotch) rightEdgeX=\(notch.rightEdgeX) indicatorPanel=\(indicatorPanel != nil)")
+        ClickLog("[enterOverflowMode] isOverflowMode = true")
         #endif
-
-        // ノッチのある環境のみインジケーターを表示する。
-        // ノッチなし環境では NSStatusItem ボタンがノッチに押し込まれることはないため
-        // インジケーターは不要（将来的に別の表示方法を追加可能）。
-        guard notch.hasNotch else { return }
-
-        indicatorPanel?.showIfNeeded(notch: notch, screen: screen)
     }
 
     private func exitOverflowMode() {
         guard isOverflowMode else { return }
         isOverflowMode = false
-        indicatorPanel?.hide()
-    }
-}
-
-// MARK: - IndicatorSymbolView ─────────────────────────────────────────────────
-//
-// インジケーター三角形を描画するカスタム NSView。
-//
-// ・SF Symbol "arrowtriangle.down.fill" を使用（テキスト ▾ より大きく鮮明）
-// ・ダーク/ライトモードの自動切替: viewDidChangeEffectiveAppearance で随時更新
-//   - Dark  → white 0.90 alpha
-//   - Light → near-black 0.80 alpha
-// ・NSShadow でわずかなドロップシャドウを付与し浮き出て見えるようにする
-// ・mouseDown / rightMouseDown をコールバック経由で親パネルに委譲する
-
-private final class IndicatorSymbolView: NSView {
-
-    var onLeftClick:  (() -> Void)?
-    var onRightClick: ((NSEvent) -> Void)?
-
-    private let imageView = NSImageView()
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        imageView.imageScaling   = .scaleNone
-        imageView.imageAlignment = .alignCenter
-        addSubview(imageView)
-        refreshAppearance()
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    // MARK: Appearance
-
-    func refreshAppearance() {
-        // SF Symbol — pointSize 13 / bold でテキスト ▾ より明確に大きく見える
-        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .bold)
-        if let sym = NSImage(systemSymbolName: "arrowtriangle.down.fill",
-                             accessibilityDescription: nil)?
-                        .withSymbolConfiguration(cfg) {
-            imageView.image = sym
-        }
-
-        // 輝度ベースのコントラスト色
-        //   Dark  → 白系で目立つ
-        //   Light → 暗色で目立つ
-        let isDark = effectiveAppearance
-            .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        imageView.contentTintColor = isDark
-            ? NSColor.white.withAlphaComponent(0.90)
-            : NSColor(white: 0.08, alpha: 0.82)
-
-        // ドロップシャドウ（メニューバー背景に溶け込まないよう輪郭を強調）
-        let shadow = NSShadow()
-        shadow.shadowColor      = NSColor.black.withAlphaComponent(isDark ? 0.55 : 0.25)
-        shadow.shadowBlurRadius = 3
-        shadow.shadowOffset     = NSSize(width: 0, height: -1)
-        imageView.shadow = shadow
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        refreshAppearance()
-    }
-
-    // MARK: Layout
-
-    override func layout() {
-        super.layout()
-        // imageView をパネル全体に広げる。
-        // パネルはメニューバー高さ + overhang 分だけ下に伸びているため、
-        // 画像の中心がちょうどメニューバー底辺付近に来る。
-        imageView.frame = bounds
-    }
-
-    // MARK: Mouse events
-
-    // acceptsFirstMouse: パネルが非アクティブでも mouseDown を受け取れるようにする
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        onLeftClick?()
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        onRightClick?(event)
-    }
-}
-
-// MARK: - NotchIndicatorPanel ─────────────────────────────────────────────────
-//
-// NSPanel ベースのノッチ境界インジケーター（セカンダリバー方式）。
-//
-// 背景:
-//   macOS 26 では NSStatusItem に priority を指定しても並び順が制御できず、
-//   バーが混雑するとアプリアイコン自体がノッチ内に押し込まれて不可視になる。
-//   NSPanel を直接 notchInfo.rightEdgeX に配置することで NSStatusItem の
-//   並び順とは完全に独立した固定表示を実現する。
-//
-// ウィンドウレベル:
-//   CGWindowLevelForKey(.statusWindow) + 1 = 26
-//   NSStatusItem が属するシステムバーウィンドウ (level 25) より +1 前面にすることで
-//   既存の NSStatusItem アイコン上に確実に重なって表示される。
-//
-// 表示位置:
-//   X: notchInfo.rightEdgeX（ノッチ右端の直後、システムアイコンより左）
-//   Y: screen.frame.maxY - menuBarH - overhang
-//      パネルをメニューバー底辺より overhang(6pt) 分だけ下に伸ばすことで、
-//      三角形がメニューバー底辺のすぐ下に "ぶら下がる" 形で表示される。
-//   W: 32pt / H: menuBarH + overhang
-//
-// クリック処理:
-//   左クリック → IndicatorSymbolView.mouseDown → onLeftClick() → パネルをトグル
-//   右クリック → sendEvent / localMonitor → onRightClick() → 設定メニュー
-//   ※ rightMouseDown は NSPanel.sendEvent でキャプチャする（nonactivatingPanel では
-//      NSView 層に届く前にシステムに横取りされることがあるため）
-
-final class NotchIndicatorPanel: NSPanel {
-
-    var onLeftClick:  (() -> Void)?
-    /// rightMouseDown イベントをそのまま渡す。
-    /// NSMenu.popUpContextMenu(_:with:for:) に使うためにイベントオブジェクトが必要。
-    var onRightClick: ((NSEvent) -> Void)?
-
-    // MARK: - Private state
-
-    /// メニューバー底辺より下にはみ出す量 (pt)。
-    /// 0 にすることでパネルがメニューバー内に完全に収まり、
-    /// 三角形が他のステータスアイコンと同じ高さに揃う。
-    private let overhang: CGFloat = 0
-
-    private let symbolView = IndicatorSymbolView()
-
-    /// ローカルイベントモニター（右クリック用）。
-    /// sendEvent が呼ばれない場合（システムによる横取り等）のバックアップ。
-    private var rightClickMonitor: Any?
-
-    init() {
-        super.init(
-            contentRect: .zero,
-            styleMask:   [.borderless, .nonactivatingPanel],
-            backing:     .buffered,
-            defer:       false
-        )
-        level              = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
-        isFloatingPanel    = true
-        isOpaque           = false
-        backgroundColor    = .clear
-        hasShadow          = false
-        ignoresMouseEvents = false
-        hidesOnDeactivate  = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-
-        // 左クリック → symbolView 経由で受け取る
-        symbolView.onLeftClick  = { [weak self] in self?.onLeftClick?() }
-        symbolView.onRightClick = { [weak self] event in self?.onRightClick?(event) }
-        contentView = symbolView
-
-        // 右クリックのローカルモニターを常時登録する。
-        // nonactivatingPanel では sendEvent が rightMouseDown を受け取れない場合があるため
-        // (メニューバー領域の右クリックをシステムが横取りするケースへの対処)。
-        rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
-            guard let self, self.isVisible else { return event }
-            guard self.frame.contains(NSEvent.mouseLocation) else { return event }
-            self.onRightClick?(event)
-            return nil
-        }
-    }
-
-    deinit {
-        if let m = rightClickMonitor { NSEvent.removeMonitor(m) }
-    }
-
-    // MARK: Key / Main window policy
-
-    override var canBecomeKey:  Bool { false }
-    override var canBecomeMain: Bool { false }
-
-    override func orderFront(_ sender: Any?) {
-        super.orderFront(sender)
-        NSApp.preventWindowOrdering()
-    }
-
-    override func orderFrontRegardless() {
-        super.orderFrontRegardless()
-        NSApp.preventWindowOrdering()
-    }
-
-    // MARK: Event handling
-
-    override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
-    }
-
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .rightMouseDown {
-            onRightClick?(event)
-            return
-        }
-        super.sendEvent(event)
-    }
-
-    // MARK: Positioning
-
-    /// ノッチ右端にパネルを配置する。
-    /// overhang 分だけメニューバー底辺より下に伸ばすことで、
-    /// 三角形がメニューバーに張り付いて見える。
-    func reposition(notch: NotchInfo, screen: NSScreen) {
-        let menuBarH = screen.frame.maxY - screen.visibleFrame.maxY
-        let x = notch.rightEdgeX
-        let y = screen.frame.maxY - menuBarH - overhang
-        setFrame(NSRect(x: x, y: y, width: 32, height: menuBarH + overhang), display: false)
-    }
-
-    // MARK: Show / Hide
-
-    func showIfNeeded(notch: NotchInfo, screen: NSScreen) {
-        reposition(notch: notch, screen: screen)
+        // AppDelegate の NSStatusItem アイコンを元に戻してもらう
+        onOverflowModeChanged?(false)
         #if DEBUG
-        ClickLog("[showIfNeeded] isVisible=\(isVisible) frame=\(frame) alphaValue=\(alphaValue)")
+        ClickLog("[exitOverflowMode] isOverflowMode = false")
         #endif
-        guard !isVisible else { return }
-        alphaValue = 0
-        orderFront(nil)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            animator().alphaValue = 1
-        }
-    }
-
-    func hide() {
-        guard isVisible else { return }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.10
-            animator().alphaValue = 0
-        }) { [weak self] in
-            self?.orderOut(nil)
-            self?.alphaValue = 1
-        }
     }
 }
 
-// MARK: - OverflowPanel (NSPanel subclass) ─────────────────────────────────────
-//
-// canBecomeKey/Main を明示的に true にすることで、
-// makeKeyAndOrderFront(nil) が確実にこのパネルを keyWindow に昇格させる。
-//
-// 右クリックは OverflowItemView.rightMouseDown で直接処理する。
-// このパネルは .borderless のみ（nonactivatingPanel でない）のため、
+// MARK: - OverflowPanel ───────────────────────────────────────────────────────
 // rightMouseDown は AppKit の通常ディスパッチ経由で NSView 層まで確実に届く。
 
 private final class OverflowPanel: NSPanel {
 
     // このパネルを唯一の keyWindow 候補にする。
-    // false のままだと makeKeyAndOrderFront が無視される。
     override var canBecomeKey:  Bool { true }
     override var canBecomeMain: Bool { true }
 
-    // acceptsFirstMouse は NSView のメソッドのため NSPanel には定義できない。
-    // 「最初のクリックを活性化に消費しない」制御は
-    // OverflowPanelContent / GearButton（NSView サブクラス）側で行う。
-
-    // Right-click events are handled by OverflowItemView.rightMouseDown directly.
-    // Routing via sendEvent + manual hitTest was fragile (coordinate conversion edge cases).
-    // super.sendEvent dispatches through AppKit's standard hitTest → rightMouseDown chain.
-
     #if DEBUG
-    /// パネルが orderOut される瞬間をスタックトレースつきでログに残す。
     override func orderOut(_ sender: Any?) {
         let stack = Thread.callStackSymbols.prefix(8).joined(separator: "\n    ")
         ClickLog("[OverflowPanel orderOut] isVisible=\(isVisible)\n    \(stack)")
         super.orderOut(sender)
     }
-
-    /// setIsVisible(false) 経由（hidesOnDeactivate など）で消える場合を捕捉する。
     override func setIsVisible(_ flag: Bool) {
         if !flag {
             let stack = Thread.callStackSymbols.prefix(8).joined(separator: "\n    ")
@@ -504,8 +248,6 @@ private final class OverflowPanel: NSPanel {
         }
         super.setIsVisible(flag)
     }
-
-    /// close() 経由で消える場合を捕捉する。
     override func close() {
         let stack = Thread.callStackSymbols.prefix(8).joined(separator: "\n    ")
         ClickLog("[OverflowPanel close()] isVisible=\(isVisible)\n    \(stack)")
@@ -523,7 +265,7 @@ final class OverflowPanelController: NSObject {
     private var globalMouseMonitor: Any?
     private var globalKeyMonitor:   Any?
     private var localLeftMonitor: Any?
-    /// showPanel で隠した NotchIndicatorPanel を hidePanel 時に再表示するために保持する。
+    /// オーバーフローパネル位置計算に使うアンカー（インジケーター button window）。
     private weak var anchorPanel: NSWindow?
 
     /// showPanel/hidePanel の呼び出し世代カウンター。
@@ -608,11 +350,8 @@ final class OverflowPanelController: NSObject {
         // この showPanel より後に発火しても orderOut をスキップさせるため。
         panelGeneration += 1
 
-        // ② アンカー（▾ インジケーター）をキー候補から除外するため一時的に隠す。
-        //   canBecomeKey = false の NotchIndicatorPanel が画面に残っていると、
-        //   OS がキー候補を探す際に干渉することがある。
+        // アンカーウィンドウ（インジケーター button window）をパネル位置計算に使う
         anchorPanel = anchor
-        anchor?.orderOut(nil)
 
         positionPanel(anchoredTo: anchor)
         panelContent.startColorSampling()
@@ -675,7 +414,7 @@ final class OverflowPanelController: NSObject {
         // 世代番号を保持する。完了ハンドラ発火時点で世代が変わっていれば
         // showPanel が呼ばれた後なので orderOut をスキップして panel を生かす。
         let gen = panelGeneration
-        let shouldRestoreIndicator = restoreIndicator
+        _ = restoreIndicator  // NSStatusItem ベースのインジケーターは廃止済み
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.12
             panel.animator().alphaValue = 0
@@ -690,14 +429,7 @@ final class OverflowPanelController: NSObject {
             }
             self.panel.orderOut(nil)
             self.panel.alphaValue = 1
-            if shouldRestoreIndicator {
-                // showPanel で隠した ▾ インジケーターを再表示する。
-                // OverflowStatusManager のポーリングよりも即座に戻す。
-                // orderFront の override 内でも preventWindowOrdering を呼ぶが、
-                // ここでも明示的に呼ぶことで OverflowPanel の keyWindow 状態を確実に守る。
-                self.anchorPanel?.orderFront(nil)
-                NSApp.preventWindowOrdering()
-            }
+            // NSStatusItem ベースのインジケーターは非表示にしていないため復元不要
             self.anchorPanel = nil
         }
     }
@@ -960,11 +692,18 @@ final class OverflowPanelController: NSObject {
 
         let y = screen.frame.maxY - barH - size.height
         var x: CGFloat
-        if let anchorFrame = anchor?.frame {
-            // インジケーターパネルまたはアプリアイコンウィンドウを基準に中央配置
+        // anchor が visible zone（notchRightEdge より右）にある場合のみアンカー基準で配置。
+        // dead zone（notch 内や x≈618）にある anchor を使うとパネルが画面外に出るため、
+        // その場合は visible zone 左端（notch 右端直後）を使う。
+        let anchorX = anchor?.frame.origin.x ?? -1
+        let anchorInVisibleZone = notch.hasNotch
+            ? anchorX >= notch.rightEdgeX
+            : anchorX > 0
+        if let anchorFrame = anchor?.frame, anchorInVisibleZone {
             x = anchorFrame.midX - size.width / 2
         } else if notch.hasNotch {
-            x = notch.leftEdgeX - size.width
+            // アイコンが dead zone、またはショートカット起動 → ノッチ右端の直後に表示
+            x = notch.rightEdgeX + 4
         } else {
             x = screen.frame.midX - size.width / 2
         }

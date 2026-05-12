@@ -20,6 +20,10 @@
 		BB0000000000000000000030 /* OverflowUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* OverflowUI.swift */; };
 		BB0000000000000000000031 /* DebugMenuManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000031 /* DebugMenuManager.swift */; };
 		BB0000000000000000000032 /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000032 /* LanguageManager.swift */; };
+		BB0000000000000000000033 /* OverflowStateModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* OverflowStateModel.swift */; };
+		BB0000000000000000000034 /* MenuBarDockXApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000034 /* MenuBarDockXApp.swift */; };
+		BB0000000000000000000035 /* LoginItemManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000035 /* LoginItemManager.swift */; };
+		BB0000000000000000000036 /* GlobalShortcutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000036 /* GlobalShortcutManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +43,10 @@
 		AA0000000000000000000030 /* OverflowUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverflowUI.swift; sourceTree = "<group>"; };
 		AA0000000000000000000031 /* DebugMenuManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugMenuManager.swift; sourceTree = "<group>"; };
 		AA0000000000000000000032 /* LanguageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageManager.swift; sourceTree = "<group>"; };
+		AA0000000000000000000033 /* OverflowStateModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverflowStateModel.swift; sourceTree = "<group>"; };
+		AA0000000000000000000034 /* MenuBarDockXApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarDockXApp.swift; sourceTree = "<group>"; };
+		AA0000000000000000000035 /* LoginItemManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemManager.swift; sourceTree = "<group>"; };
+		AA0000000000000000000036 /* GlobalShortcutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalShortcutManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -74,6 +82,10 @@
 				AA0000000000000000000030 /* OverflowUI.swift */,
 				AA0000000000000000000031 /* DebugMenuManager.swift */,
 				AA0000000000000000000032 /* LanguageManager.swift */,
+				AA0000000000000000000033 /* OverflowStateModel.swift */,
+				AA0000000000000000000034 /* MenuBarDockXApp.swift */,
+				AA0000000000000000000035 /* LoginItemManager.swift */,
+				AA0000000000000000000036 /* GlobalShortcutManager.swift */,
 				AA000000000000000000000E /* classification_rules.json */,
 				AA000000000000000000000F /* Assets.xcassets */,
 				AA0000000000000000000010 /* Info.plist */,
@@ -161,7 +173,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BB0000000000000000000020 /* main.swift in Sources */,
 				BB0000000000000000000001 /* AppDelegate.swift in Sources */,
 				BB0000000000000000000002 /* EnvironmentChecker.swift in Sources */,
 				BB0000000000000000000003 /* MenuBarItem.swift in Sources */,
@@ -178,6 +189,10 @@
 				BB0000000000000000000030 /* OverflowUI.swift in Sources */,
 				BB0000000000000000000031 /* DebugMenuManager.swift in Sources */,
 				BB0000000000000000000032 /* LanguageManager.swift in Sources */,
+				BB0000000000000000000033 /* OverflowStateModel.swift in Sources */,
+				BB0000000000000000000034 /* MenuBarDockXApp.swift in Sources */,
+				BB0000000000000000000035 /* LoginItemManager.swift in Sources */,
+				BB0000000000000000000036 /* GlobalShortcutManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

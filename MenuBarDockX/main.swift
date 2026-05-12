@@ -1,7 +1,1 @@
-import AppKit
-
-// Explicit entry point — more reliable than @NSApplicationMain on newer macOS.
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+// Entry point is defined in MenuBarDockXApp.swift via @main

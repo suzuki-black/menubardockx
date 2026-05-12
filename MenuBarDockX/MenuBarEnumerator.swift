@@ -119,18 +119,19 @@ final class MenuBarEnumerator {
                 let isHiddenLeft = pos.x <= 0
 
                 // Pattern B: ノッチゾーン内 (有効座標だがノッチに隠されている)
-                //   pos.x が 0 より大きく notchInfo.rightEdgeX より小さい
-                //   → アイテムの左端がノッチ内に入っている
                 //
-                // + 40pt のマージンを加える理由:
-                //   NotchDetector.rightEdgeX は物理的なカメラ筐体の右端より
-                //   数ピクセル内側を返すことがあり、ノッチ直後に配置された
-                //   アイコン (pos.x が rightEdgeX を数 pt 超えるだけ) が
-                //   視覚上はノッチに隠れているのに "可視" と誤判定される。
-                //   40pt の余裕を持たせることで確実に捕捉する。
+                // 【判定基準】アイコンの「右端」がノッチ右端より左 = 完全にノッチ内 → 不可視
+                //
+                //   旧実装は左端 (pos.x) だけで判定していたため、
+                //   左端がノッチ内でも右端がノッチ外に出ているアイコン
+                //   （例: Stats ネットワーク x=800 w=57 → 右端 857 > rightEdge 848）
+                //   が「不可視」と誤判定されパネルに重複表示される不具合があった。
+                //
+                //   右端基準にすることで「少しでも可視ゾーンに出ている = 可視」と正しく判定する。
+                let iconRight = pos.x + size.width
                 let isInNotchZone = notchInfo.hasNotch
                     && pos.x > 0
-                    && pos.x < notchInfo.rightEdgeX + 40
+                    && iconRight < notchInfo.rightEdgeX
 
                 let isHidden = isHiddenLeft || isInNotchZone
 

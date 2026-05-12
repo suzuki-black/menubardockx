@@ -10,8 +10,12 @@ final class DebugSettings {
     var simulatedNotchEnabled: Bool = false {
         didSet { NotificationCenter.default.post(name: .debugSettingsChanged, object: nil) }
     }
-    var dummyIconsEnabled: Bool = false {
-        didSet { NotificationCenter.default.post(name: .debugSettingsChanged, object: nil) }
+    private static let dummyEnabledKey = "debug.dummyIconsEnabled"
+    var dummyIconsEnabled: Bool = UserDefaults.standard.bool(forKey: dummyEnabledKey) {
+        didSet {
+            UserDefaults.standard.set(dummyIconsEnabled, forKey: Self.dummyEnabledKey)
+            NotificationCenter.default.post(name: .debugSettingsChanged, object: nil)
+        }
     }
 
     // MARK: Dummy icon count

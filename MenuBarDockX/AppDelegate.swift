@@ -1,33 +1,6 @@
 import AppKit
 import ObjectiveC
-
-// MARK: - NSStatusBar private API ──────────────────────────────────────────────
-// _statusItemWithLength:withPriority: は非公開 Obj-C メソッド。
-// 優先度を指定することで status item の配置位置を制御できる。
-// 優先度が高い(大きい)ほど、より右側(ノッチから遠く安定した位置)に配置される。
-//
-// 既知の優先度レンジ:
-//   0        : デフォルト三者製 (最左寄り、不安定)
-//   ~INT32_MAX: システム項目 (最右端、固定)
-//   1000     : 三者製最右端付近 (本実装で使用)
-//
-// iOS/macOS App Store 提出を前提としないOSSのため private API 使用を許容する。
-// フォールバック: API が存在しない場合は公開 API で通常作成。
-private extension NSStatusBar {
-    typealias _StatusItemFn = @convention(c) (NSStatusBar, Selector, CGFloat, Int) -> NSStatusItem
-
-    /// 優先度付きで NSStatusItem を作成する (private API ラッパー)。
-    func statusItem(withLength length: CGFloat, priority: Int) -> NSStatusItem {
-        let sel = NSSelectorFromString("_statusItemWithLength:withPriority:")
-        guard responds(to: sel),
-              let method = class_getInstanceMethod(type(of: self), sel) else {
-            return self.statusItem(withLength: length)  // fallback
-        }
-        let imp = method_getImplementation(method)
-        let fn  = unsafeBitCast(imp, to: _StatusItemFn.self)
-        return fn(self, sel, length, priority)
-    }
-}
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -47,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     private var statusItem: NSStatusItem?
+    /// overflow でない通常時のアイコン（復元用）
+    private var normalStatusIcon: NSImage?
 
     // Shared enumerator (used by the overflow manager)
     private let sharedEnumerator = MenuBarEnumerator()
@@ -59,8 +34,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // .accessory ポリシーで起動することで Dock アイコンを非表示にする。
-        // パネル表示時のみ OverflowPanelController.showPanel() 内で .regular に昇格し、
-        // パネルを閉じた後に再び .accessory に戻す（トグル方式）。
         NSApp.setActivationPolicy(.accessory)
 
         // Terminate duplicate instances (can happen during development)
@@ -70,19 +43,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         others.forEach { $0.terminate() }
         dbg("applicationDidFinishLaunching")
 
+        // ログイン時自動起動を初回起動時にオファーする
+        promptLoginItemIfNeeded()
+
         // Environment check
         let report = EnvironmentChecker.run()
         dbg("AX=\(report.hasAccessibility) version=\(report.versionSupport) rosetta=\(report.rosettaStatus)")
         EnvironmentChecker.requestAccessibilityIfNeeded()
         dbg("after requestAX: AX=\(AXIsProcessTrusted())")
 
-        // App's own menu bar status item
+        // NSStatusItem を作成し、overflow 検出コールバックを登録してから polling 開始
         setupStatusItem()
 
-        // Notch overflow UI — statusItem を渡して overflow 時にボタンを切り替える
+        // Overflow 検出開始
         if let si = statusItem {
             OverflowStatusManager.shared.start(with: sharedEnumerator, statusItem: si)
         }
+
+        // グローバルショートカット起動（⌥⌘M でパネルを開く）
+        // アイコンが dead zone に押し出されても常に動作する。
+        GlobalShortcutManager.shared.start()
 
         // Show environment warnings (non-blocking)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -101,18 +81,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusItem() {
         dbg("setupStatusItem")
-        // 優先度 1000 で作成 → システムアイテムより左、一般三者製より右の安定位置に配置される。
-        // これにより他のアプリがアイテムを追加してもアイコンがノッチ内に押し込まれにくくなる。
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength, priority: 1000)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
-        // macOS 26 (Tahoe) では透明メニューバーのため menubar.rectangle が不可視になる場合がある。
-        // 複数シンボルを試してフォールバックし、最終的にテキストで確実に表示する。
+        // アイコン候補（OS バージョンによって使えるシンボルが異なる）
         let symbolNames = ["menubar.rectangle", "menubar.dock.rectangle",
                            "rectangle.3.group", "square.grid.2x2.fill"]
         var resolvedIcon: NSImage?
         for name in symbolNames {
-            if let img = NSImage(systemSymbolName: name,
-                                 accessibilityDescription: "MenuBarDockX") {
+            if let img = NSImage(systemSymbolName: name, accessibilityDescription: "MenuBarDockX") {
                 resolvedIcon = img
                 dbg("icon resolved: \(name)")
                 break
@@ -120,30 +96,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let icon = resolvedIcon {
-            // isTemplate=true にして Dark/Light 両対応。
             icon.isTemplate = true
             let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-            statusItem?.button?.image = icon.withSymbolConfiguration(cfg)
-            dbg("icon=set image button=\(String(describing: statusItem?.button))")
+            let configured = icon.withSymbolConfiguration(cfg)
+            statusItem?.button?.image = configured
+            normalStatusIcon = configured      // 復元用に保存
         } else {
-            // 完全フォールバック: SF Symbol が使えない場合はテキストで表示
             statusItem?.button?.title = "⬟"
-            statusItem?.button?.font = .boldSystemFont(ofSize: 13)
-            dbg("icon=FALLBACK text button=\(String(describing: statusItem?.button))")
+            statusItem?.button?.font  = .boldSystemFont(ofSize: 13)
         }
 
         statusItem?.button?.toolTip = "MenuBarDockX"
-        dbg("status item visible=\(statusItem?.isVisible == true)")
-
         statusItem?.menu = makeMenu()
+        dbg("setupStatusItem done isVisible=\(statusItem?.isVisible == true)")
+
+        // overflow ON/OFF に応じてアイコンとメニューを切り替える
+        OverflowStatusManager.shared.onOverflowModeChanged = { [weak self] isOverflow in
+            self?.updateForOverflowMode(isOverflow)
+        }
     }
+
+    /// overflow 状態の変化に応じてアイコンとクリック動作を更新する。
+    /// メインスレッドから呼ばれる前提。
+    private func updateForOverflowMode(_ isOverflow: Bool) {
+        if isOverflow {
+            // ▾（下向き三角）に変更
+            if let img = NSImage(systemSymbolName: "arrowtriangle.down.fill",
+                                 accessibilityDescription: "Show hidden menu bar items") {
+                img.isTemplate = true
+                let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+                statusItem?.button?.image = img.withSymbolConfiguration(cfg)
+            }
+            // overflow 中はメニューを外し、1クリックで直接パネルを開く
+            statusItem?.menu = nil
+            statusItem?.button?.action = #selector(showHiddenItems)
+            statusItem?.button?.target = self
+            statusItem?.button?.toolTip = L("Show hidden menu bar items",
+                                            "隠れたメニューバーアイテムを表示")
+        } else {
+            // 通常アイコンに戻してメニューを復元
+            statusItem?.button?.image = normalStatusIcon
+            statusItem?.button?.action = nil
+            statusItem?.button?.target = nil
+            statusItem?.menu = makeMenu()
+            statusItem?.button?.toolTip = "MenuBarDockX"
+        }
+        dbg("updateForOverflowMode isOverflow=\(isOverflow)")
+    }
+
+    // MARK: - Menu
 
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
+
         menu.addItem(withTitle: L("About MenuBarDockX…", "このアプリについて…"),
                      action: #selector(showAbout),
                      keyEquivalent: "")
             .target = self
+        menu.addItem(NSMenuItem.separator())
+
+        // ログイン時自動起動トグル
+        let loginTitle = LoginItemManager.shared.isEnabled
+            ? L("Disable Launch at Login", "ログイン時の自動起動をオフにする")
+            : L("Launch at Login", "ログイン時に自動起動する")
+        let loginItem = menu.addItem(withTitle: loginTitle,
+                                     action: #selector(toggleLaunchAtLogin),
+                                     keyEquivalent: "")
+        loginItem.target = self
+        if LoginItemManager.shared.isEnabled {
+            loginItem.state = .on
+        }
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: L("Quit MenuBarDockX", "MenuBarDockX を終了"),
                      action: #selector(NSApplication.terminate(_:)),
@@ -160,7 +183,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = makeMenu()
     }
 
+    // MARK: - Login Item prompt
+
+    private static let loginItemPromptedKey = "loginItemPromptShown"
+
+    /// 初回起動時（ログイン項目未登録時）に自動起動をオファーするダイアログを表示する。
+    ///
+    /// macOS 26 Tahoe ではメニューバーの右ゾーンが満杯の場合、後から起動したアプリは
+    /// ノッチ左の dead zone に押し出され ▾ インジケーターが見えなくなる。
+    /// ログイン項目として最も早く起動することでスロットを確保できる。
+    private func promptLoginItemIfNeeded() {
+        guard !LoginItemManager.shared.isEnabled else { return }
+        guard !UserDefaults.standard.bool(forKey: Self.loginItemPromptedKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.loginItemPromptedKey)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            let alert = NSAlert()
+            alert.messageText = L(
+                "Launch MenuBarDockX at Login?",
+                "ログイン時に MenuBarDockX を自動起動しますか？")
+            alert.informativeText = L(
+                """
+                On macOS Sequoia / Tahoe, the ▾ indicator is only visible if \
+                MenuBarDockX starts before other menu bar apps.
+
+                Enabling "Launch at Login" lets it start first and grab a slot \
+                in the visible zone.
+
+                You can change this later from the MenuBarDockX menu.
+                """,
+                """
+                macOS Sequoia / Tahoe では、MenuBarDockX が他のメニューバーアプリより \
+                先に起動した場合のみ ▾ インジケーターが表示されます。
+
+                「ログイン時に自動起動」を有効にすると起動順を最優先にできます。
+
+                この設定は後から MenuBarDockX メニューで変更できます。
+                """)
+            alert.alertStyle = .informational
+            if let icon = NSApp.applicationIconImage { alert.icon = icon }
+            alert.addButton(withTitle: L("Enable", "有効にする"))
+            alert.addButton(withTitle: L("Not Now", "あとで"))
+
+            NSApp.activate(ignoringOtherApps: true)
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                LoginItemManager.shared.enable()
+                self.rebuildMenu()
+            }
+        }
+    }
+
     // MARK: - Actions
+
+    @objc private func showHiddenItems() {
+        OverflowStatusManager.shared.togglePanel()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        if LoginItemManager.shared.isEnabled {
+            LoginItemManager.shared.disable()
+        } else {
+            LoginItemManager.shared.enable()
+        }
+        rebuildMenu()
+    }
+
+    @objc func showAboutFromMenu() { showAbout() }
 
     @objc private func showAbout() {
         let info    = Bundle.main.infoDictionary ?? [:]
