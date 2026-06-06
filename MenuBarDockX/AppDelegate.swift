@@ -155,17 +155,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .target = self
         menu.addItem(NSMenuItem.separator())
 
-        // ログイン時自動起動トグル
-        let loginTitle = LoginItemManager.shared.isEnabled
-            ? L("Disable Launch at Login", "ログイン時の自動起動をオフにする")
-            : L("Launch at Login", "ログイン時に自動起動する")
-        let loginItem = menu.addItem(withTitle: loginTitle,
-                                     action: #selector(toggleLaunchAtLogin),
-                                     keyEquivalent: "")
+        // ログイン時自動起動トグル（タイトル固定・チェックマークで状態を示す）
+        let loginItem = menu.addItem(
+            withTitle: L("Launch at Login", "ログイン時に自動起動"),
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: "")
         loginItem.target = self
-        if LoginItemManager.shared.isEnabled {
-            loginItem.state = .on
-        }
+        loginItem.state = LoginItemManager.shared.isEnabled ? .on : .off
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: L("Quit MenuBarDockX", "MenuBarDockX を終了"),
@@ -263,6 +259,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             \(L("Bring your hidden menu bar icons back into view.",
                 "macOS のメニューバーを、見える場所に取り戻す。"))
+
+            \(L("Shortcut: ⌃⌥⌘M opens the overflow panel.",
+                "ショートカット: ⌃⌥⌘M でオーバーフローパネルを開きます。"))
 
             © 2026 suzuki-black
             MIT License

@@ -2,10 +2,6 @@ import AppKit
 import ApplicationServices
 import SwiftUI
 
-private extension CGRect {
-    var center: CGPoint { CGPoint(x: midX, y: midY) }
-}
-
 // MARK: - NotchInfo ────────────────────────────────────────────────────────────
 
 struct NotchInfo {
@@ -615,71 +611,6 @@ final class OverflowPanelController: NSObject {
         #if DEBUG
         ClickLog("[showFallbackMenu] \(appName) appName shown at \(cursorAppKit)")
         #endif
-    }
-
-    /// CGWindowListCopyWindowInfo でアイコン座標付近のウィンドウ ID を探す。
-    /// オーナー PID が一致するものを優先し、次に座標が含まれるものを返す。
-    private static func findWindowID(near origin: CGPoint,
-                                     size: CGSize,
-                                     ownerPID: pid_t) -> CGWindowID? {
-        guard let list = CGWindowListCopyWindowInfo(
-            [.optionAll, .excludeDesktopElements],
-            kCGNullWindowID) as? [[String: Any]] else { return nil }
-
-        // アイコンの矩形（AX 座標系）
-        let iconRect = CGRect(origin: origin, size: size)
-
-        #if DEBUG
-        // メニューバー付近（y < 40）の全ウィンドウをダンプして環境を把握する
-        let menuBarWindows = list.filter { info in
-            guard let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
-                  let y = boundsDict["Y"], let h = boundsDict["Height"] else { return false }
-            return y < 40 || (y < 0 && y + h > 0)
-        }
-        for info in menuBarWindows {
-            let bounds = info[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
-            let x = bounds["X"] ?? 0; let y = bounds["Y"] ?? 0
-            let w = bounds["Width"] ?? 0; let h = bounds["Height"] ?? 0
-            let wnum = info[kCGWindowNumber as String] as? Int ?? -1
-            let pid  = info[kCGWindowOwnerPID as String] as? Int ?? -1
-            let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
-            let name  = info[kCGWindowName as String] as? String ?? ""
-            let layer = info[kCGWindowLayer as String] as? Int ?? -1
-            ClickLog("[menuBarWin] id=\(wnum) pid=\(pid) owner='\(owner)' name='\(name)' layer=\(layer) rect=(\(x),\(y),\(w),\(h))")
-        }
-        #endif
-
-        var bestID: CGWindowID?
-        var bestScore = -1
-
-        for info in list {
-            guard let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
-                  let x = boundsDict["X"], let y = boundsDict["Y"],
-                  let w = boundsDict["Width"], let h = boundsDict["Height"],
-                  let wnum = info[kCGWindowNumber as String] as? Int else { continue }
-
-            let windowRect = CGRect(x: x, y: y, width: w, height: h)
-            guard windowRect.intersects(iconRect) else { continue }
-
-            let pid = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
-            var score = 0
-            if pid == ownerPID { score += 2 }
-            if windowRect.contains(iconRect.center) { score += 1 }
-
-            if score > bestScore {
-                bestScore = score
-                bestID = CGWindowID(wnum)
-                #if DEBUG
-                let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
-                let name  = info[kCGWindowName as String] as? String ?? ""
-                ClickLog("[findWindowID] → candidate id=\(wnum) pid=\(pid) owner='\(owner)' name='\(name)' rect=(\(x),\(y),\(w),\(h)) score=\(score)")
-                #endif
-            }
-        }
-        #if DEBUG
-        ClickLog("[findWindowID] origin=\(origin) ownerPID=\(ownerPID) → windowID=\(bestID as Any) score=\(bestScore)")
-        #endif
-        return bestID
     }
 
     private func positionPanel(anchoredTo anchor: NSWindow?) {

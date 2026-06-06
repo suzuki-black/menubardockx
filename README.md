@@ -308,6 +308,13 @@ Migration runs once at launch via `DataStore.migrateIfNeeded()`, managed by the 
 | Third-party dependencies | None |
 | App Sandbox | Disabled (required for AX API) |
 
+### Documentation (Japanese)
+
+| Document | Contents |
+|----------|----------|
+| [`docs/設計書.md`](docs/設計書.md) | Architecture, module responsibilities, data flow, key algorithms (notch detection, hidden-item judgement, panel positioning) |
+| [`docs/取扱説明書.md`](docs/取扱説明書.md) | End-user manual: installation, permissions, daily use, shortcut, settings, troubleshooting |
+
 ### File responsibilities
 
 | File | Role |
@@ -320,7 +327,8 @@ Migration runs once at launch via `DataStore.migrateIfNeeded()`, managed by the 
 | `DebugMenuManager.swift` | Debug menu, simulated notch, dummy icons (`#if DEBUG`) |
 | `MenuBarEnumerator.swift` | Menu bar item enumeration via AX API (right-edge based hidden detection) |
 | `EnvironmentChecker.swift` | Accessibility permission check and report |
-| `Category.swift` | Category definitions and auto-classification rules |
+| `ClassificationRulesManager.swift` | Auto-classification: maps bundle ID → category via `classification_rules.json` |
+| `Category.swift` | Category definitions and preset UUIDs |
 | `MenuBarItem.swift` | Menu bar item model and DTO |
 
 ### OSS design principles
@@ -381,6 +389,17 @@ Migration runs once at launch via `DataStore.migrateIfNeeded()`, managed by the 
 **Duplicate icon fix (new)**
 - Hidden icon detection now uses the **right edge** of each icon (`pos.x + width < notchRightEdge`) instead of the left edge with a +40 pt margin.
 - Fixes the bug where icons straddling the notch boundary (left side hidden, right side visible) appeared in both the visible menu bar and the overflow panel simultaneously.
+
+**Auto-classification activated**
+- The bundled classification rules (`classification_rules.json`) are now actually applied: a newly discovered icon with no saved category is auto-assigned to a preset category (Development / Cloud / Security / Utility …) by bundle ID. Previously the rules were shipped but never invoked.
+
+**Login menu clarity fix**
+- The "Launch at Login" menu item now uses a fixed title with a checkmark for state, instead of a contradictory "Disable Launch at Login" + checkmark combination.
+
+**Project & quality**
+- Added a unit test target (`MenuBarDockXTests`, 28 tests) covering the pure-logic layer (settings codec, DTO round-trip, classification matching, category presets, language switching).
+- Removed dead code: the unused `enumerate()` query path, `findWindowID`, `processImage`, and the obsolete `OverflowStateModel` (a leftover from the removed SwiftUI MenuBarExtra approach).
+- Cleaned orphaned references in the Xcode project and added Japanese design / user documentation under `docs/`.
 
 ---
 
@@ -735,6 +754,13 @@ UserDefaults の設定値は起動時にバージョンチェックされ、
 | サードパーティ依存 | なし |
 | App Sandbox | 無効（AX API 使用のため）|
 
+### ドキュメント
+
+| ドキュメント | 内容 |
+|-------------|------|
+| [`docs/設計書.md`](docs/設計書.md) | アーキテクチャ・モジュール責務・データフロー・主要アルゴリズム（ノッチ検出／隠れ判定／パネル配置） |
+| [`docs/取扱説明書.md`](docs/取扱説明書.md) | エンドユーザー向け取扱説明：インストール・権限・日常操作・ショートカット・設定・トラブルシュート |
+
 ### ファイル構成と責務
 
 | ファイル | 責務 |
@@ -747,7 +773,8 @@ UserDefaults の設定値は起動時にバージョンチェックされ、
 | `DebugMenuManager.swift` | デバッグメニュー・擬似ノッチ・ダミーアイコン管理（`#if DEBUG`）|
 | `MenuBarEnumerator.swift` | AX API によるメニューバー項目の列挙（右端基準の隠れ判定）|
 | `EnvironmentChecker.swift` | アクセシビリティ権限の確認・レポート表示 |
-| `Category.swift` | カテゴリ定義・自動分類ルール |
+| `ClassificationRulesManager.swift` | 自動分類：`classification_rules.json` でバンドル ID → カテゴリを解決 |
+| `Category.swift` | カテゴリ定義・プリセット UUID |
 | `MenuBarItem.swift` | メニューバー項目モデル・DTO |
 
 ### OSS としての設計方針
@@ -809,6 +836,17 @@ UserDefaults の設定値は起動時にバージョンチェックされ、
 **重複アイコン表示の修正（バグ修正）**
 - 隠れアイコンの判定をアイコン**左端** + マージンから**右端**（`pos.x + width < notchRightEdge`）基準に変更。
 - ノッチをまたぐ位置にあるアイコン（左端は隠れているが右端は可視）が、可視領域とパネルの両方に二重表示されていたバグを修正。
+
+**自動分類の有効化**
+- 同梱の分類ルール（`classification_rules.json`）が実際に適用されるようになりました。保存済みカテゴリのない新規アイコンは、バンドル ID からプリセットカテゴリ（開発／クラウド／セキュリティ／ユーティリティ等）へ自動割当されます。従来はルールを同梱しながら一度も呼ばれていませんでした。
+
+**ログインメニューの表記修正**
+- 「ログイン時に自動起動」メニュー項目を、固定タイトル＋チェックマークで状態を示す方式に変更。「Disable Launch at Login」+ チェックという矛盾した表記を解消しました。
+
+**プロジェクト・品質**
+- ユニットテストターゲット（`MenuBarDockXTests`、28 テスト）を追加。純ロジック層（設定の Codec、DTO 往復、分類照合、カテゴリプリセット、言語切替）を網羅。
+- デッドコードを削除：未使用の `enumerate()` 列挙経路、`findWindowID`、`processImage`、廃止済み SwiftUI MenuBarExtra の名残 `OverflowStateModel`。
+- Xcode プロジェクトの孤立参照を整理し、日本語の設計書・取扱説明書を `docs/` 配下に追加。
 
 ---
 

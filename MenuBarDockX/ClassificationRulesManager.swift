@@ -55,6 +55,24 @@ final class ClassificationRulesManager {
 
     /// Returns the category name for a given bundleID, or nil if unclassified.
     func classify(bundleID: String?) -> String? {
+        Self.match(bundleID: bundleID, rules: rules, prefixRules: prefixRules)
+    }
+
+    /// Returns the preset category UUID for a given bundleID, or nil if unclassified.
+    ///
+    /// enumerateHiddenItems から呼ばれ、保存済みカテゴリがないアイテムに
+    /// classification_rules.json のルールで自動的にカテゴリを割り当てる。
+    /// ルールが返すカテゴリ名（"開発" 等）を Category.presets の固定 UUID にマップする。
+    func categoryID(forBundleID bundleID: String?) -> UUID? {
+        guard let name = classify(bundleID: bundleID) else { return nil }
+        return Category.presets.first(where: { $0.name == name })?.id
+    }
+
+    /// Pure matching logic — exact bundleID match takes precedence over prefix match.
+    /// Bundle / filesystem に依存しないため単体テスト可能。
+    static func match(bundleID: String?,
+                      rules: [ClassificationRule],
+                      prefixRules: [PrefixRule]) -> String? {
         guard let bid = bundleID else { return nil }
 
         // Exact match first

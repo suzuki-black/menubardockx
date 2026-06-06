@@ -24,7 +24,9 @@ final class GlobalShortcutManager {
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleKeyDown(event)
         }
+        #if DEBUG
         ClickLog("[GlobalShortcut] started. monitor=\(monitor != nil) AX=\(AXIsProcessTrusted())")
+        #endif
     }
 
     func stop() {

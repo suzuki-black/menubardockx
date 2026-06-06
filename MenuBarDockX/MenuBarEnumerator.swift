@@ -1,6 +1,5 @@
 import AppKit
 import ApplicationServices
-import CoreImage
 
 /// Enumerates menu bar STATUS ITEMS (right-side icons).
 ///
@@ -186,6 +185,10 @@ final class MenuBarEnumerator {
                 else if let e = knownIDs[key] { id = e }
                 else                          { let u = UUID(); knownIDs[key] = u; id = u }
 
+                // カテゴリ: 保存済み DTO を最優先し、未保存なら分類ルールで自動割当する。
+                let resolvedCategoryID = dtoByKey[key]?.categoryID
+                    ?? ClassificationRulesManager.shared.categoryID(forBundleID: bid)
+
                 var item = MenuBarItem(
                     id: id,
                     bundleID: bid,
@@ -194,7 +197,7 @@ final class MenuBarEnumerator {
                     frame: .zero,
                     isSystemItem: isSystemItem(bundleID: bid,
                                                execPath: app.executableURL?.path ?? ""),
-                    categoryID: dtoByKey[key]?.categoryID,
+                    categoryID: resolvedCategoryID,
                     sortOrder: dtoByKey[key]?.sortOrder ?? sortIndex
                 )
                 item.isHidden  = true
@@ -213,71 +216,6 @@ final class MenuBarEnumerator {
         #endif
 
         return results
-    }
-
-    func enumerate(merging existing: [MenuBarItemDTO]) -> [MenuBarItem] {
-        var dtoByKey: [String: MenuBarItemDTO] = [:]
-        for dto in existing {
-            let key = stableKey(bundleID: dto.bundleID,
-                                description: dto.axDescription,
-                                appName: dto.appName)
-            dtoByKey[key] = dto
-        }
-
-        let threshold = statusThreshold()
-        var logLines: [String] = [
-            "AX=\(AXIsProcessTrusted())  screen=\(NSScreen.main?.frame.width ?? 0)  threshold=\(Int(threshold))"
-        ]
-
-        var results: [MenuBarItem] = []
-        var sortIndex = 0
-        var seen = Set<String>()   // deduplicate by stableKey
-
-        // ── Candidate processes ───────────────────────────────────────────────
-        var candidates: [NSRunningApplication] = []
-
-        // 1. System status item managers (always query these explicitly)
-        for bid in ["com.apple.controlcenter",
-                    "com.apple.SystemUIServer",
-                    "com.apple.notificationcenterui"] {
-            if let app = NSRunningApplication
-                .runningApplications(withBundleIdentifier: bid).first {
-                candidates.append(app)
-            }
-        }
-
-        // 2. All other running apps (deduped by bundle ID)
-        var seenBID = Set<String>(candidates.compactMap(\.bundleIdentifier))
-        for app in NSWorkspace.shared.runningApplications {
-            let key = app.bundleIdentifier ?? "\(app.processIdentifier)"
-            guard seenBID.insert(key).inserted else { continue }
-            candidates.append(app)
-        }
-
-        // ── Query each candidate ──────────────────────────────────────────────
-        for app in candidates {
-            let appItems = queryMenuBar(
-                of: app,
-                threshold: threshold,
-                dtoByKey: dtoByKey,
-                sortIndex: &sortIndex,
-                seen: &seen,
-                log: &logLines
-            )
-            results.append(contentsOf: appItems)
-        }
-
-        #if DEBUG
-        try? logLines.joined(separator: "\n")
-            .write(toFile: "/tmp/mbdx_items.log", atomically: true, encoding: .utf8)
-        #endif
-
-        return results.sorted { $0.sortOrder < $1.sortOrder }
-    }
-
-    func pressItem(_ item: MenuBarItem) {
-        guard let element = item.axElement else { return }
-        AXUIElementPerformAction(element, kAXPressAction as CFString)
     }
 
     /// Finds the JetBrains Toolbox status item in AXExtrasMenuBar, if running.
@@ -327,200 +265,6 @@ final class MenuBarEnumerator {
         return item
     }
 
-    // MARK: - Per-process query
-
-    private func queryMenuBar(of app: NSRunningApplication,
-                              threshold: CGFloat,
-                              dtoByKey: [String: MenuBarItemDTO],
-                              sortIndex: inout Int,
-                              seen: inout Set<String>,
-                              log: inout [String]) -> [MenuBarItem] {
-        let pid      = app.processIdentifier
-        let axApp    = AXUIElementCreateApplication(pid)
-
-        // ── 1. Try AXExtrasMenuBar (right-side status items) ─────────────────
-        var extrasItems = queryExtrasMenuBar(axApp: axApp, app: app,
-                                             dtoByKey: dtoByKey,
-                                             sortIndex: &sortIndex,
-                                             seen: &seen,
-                                             log: &log)
-
-        // ── 2. Fallback: standard menu bar filtered by position ───────────────
-        let standardItems = queryStandardMenuBar(axApp: axApp, app: app,
-                                                  threshold: threshold,
-                                                  dtoByKey: dtoByKey,
-                                                  sortIndex: &sortIndex,
-                                                  seen: &seen,
-                                                  log: &log)
-
-        extrasItems.append(contentsOf: standardItems)
-        return extrasItems
-    }
-
-    // MARK: - AXExtrasMenuBar query
-
-    private func queryExtrasMenuBar(axApp: AXUIElement,
-                                    app: NSRunningApplication,
-                                    dtoByKey: [String: MenuBarItemDTO],
-                                    sortIndex: inout Int,
-                                    seen: inout Set<String>,
-                                    log: inout [String]) -> [MenuBarItem] {
-        let bundleID = app.bundleIdentifier
-        let appName  = app.localizedName ?? (bundleID ?? "\(app.processIdentifier)")
-
-        var extrasRef: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(
-            axApp, "AXExtrasMenuBar" as CFString, &extrasRef)
-
-        guard err == .success,
-              CFGetTypeID(extrasRef!) == AXUIElementGetTypeID() else {
-            if err != .attributeUnsupported && err != .noValue {
-                log.append("[\(appName)] extrasMenuBar err=\(err.rawValue)")
-            }
-            return []
-        }
-
-        let extrasBar = extrasRef as! AXUIElement
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            extrasBar, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement] else {
-            log.append("[\(appName)] extrasMenuBar no children")
-            return []
-        }
-
-        log.append("[\(appName)] extrasMenuBar children=\(children.count)")
-
-        var items: [MenuBarItem] = []
-        let isSystem = isSystemItem(bundleID: bundleID,
-                                    execPath: app.executableURL?.path ?? "")
-
-        for element in children {
-            let pos    = axPosition(element)
-            let size   = axSize(element)
-            let desc   = axDescription(element)
-            let role   = axRole(element)
-
-            log.append("  [extras/\(appName)] role=\(role) x=\(Int(pos.x)) w=\(Int(size.width)) '\(desc)'")
-
-            // Accept items that have a meaningful description OR a valid position
-            let hasValidPos  = pos.x > 0 || size.width > 0
-            let hasValidDesc = !desc.isEmpty
-            guard hasValidPos || hasValidDesc else { continue }
-
-            let key = stableKey(bundleID: bundleID, description: desc, appName: appName)
-            guard seen.insert(key).inserted else { continue }
-
-            let id: UUID
-            if let dto = dtoByKey[key]    { id = dto.id }
-            else if let e = knownIDs[key] { id = e }
-            else { id = UUID(); knownIDs[key] = id }
-
-            let frame    = CGRect(origin: pos, size: size)
-            let rawImage = resolveImage(element: element, description: desc, app: app)
-
-            var item = MenuBarItem(
-                id: id,
-                bundleID: bundleID,
-                appName: appName,
-                axDescription: desc,
-                frame: frame,
-                isSystemItem: isSystem,
-                categoryID: dtoByKey[key]?.categoryID,
-                sortOrder: dtoByKey[key]?.sortOrder ?? sortIndex
-            )
-            item.image     = rawImage.map { processImage($0) }
-            item.axElement = element
-
-            items.append(item)
-            sortIndex += 1
-        }
-
-        return items
-    }
-
-    // MARK: - Standard menu bar query (position-filtered fallback)
-
-    private func queryStandardMenuBar(axApp: AXUIElement,
-                                      app: NSRunningApplication,
-                                      threshold: CGFloat,
-                                      dtoByKey: [String: MenuBarItemDTO],
-                                      sortIndex: inout Int,
-                                      seen: inout Set<String>,
-                                      log: inout [String]) -> [MenuBarItem] {
-        let bundleID = app.bundleIdentifier
-        let appName  = app.localizedName ?? (bundleID ?? "\(app.processIdentifier)")
-
-        var menuBarRef: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(
-            axApp, kAXMenuBarAttribute as CFString, &menuBarRef)
-        guard err == .success,
-              CFGetTypeID(menuBarRef!) == AXUIElementGetTypeID() else {
-            if err != .attributeUnsupported && err != .noValue && err.rawValue != -25212 {
-                log.append("[\(appName)] menuBar err=\(err.rawValue)")
-            }
-            return []
-        }
-
-        let menuBar = menuBarRef as! AXUIElement
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            menuBar, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement] else {
-            return []
-        }
-
-        var items: [MenuBarItem] = []
-        let isSystem = isSystemItem(bundleID: bundleID,
-                                    execPath: app.executableURL?.path ?? "")
-
-        for element in children {
-            let pos  = axPosition(element)
-            let size = axSize(element)
-            let desc = axDescription(element)
-
-            log.append("  [\(appName)] x=\(Int(pos.x)) w=\(Int(size.width)) '\(desc)'")
-
-            guard pos.x >= threshold, size.width > 0, size.height > 0 else { continue }
-
-            let key = stableKey(bundleID: bundleID, description: desc, appName: appName)
-            guard seen.insert(key).inserted else { continue }
-
-            let id: UUID
-            if let dto = dtoByKey[key]    { id = dto.id }
-            else if let e = knownIDs[key] { id = e }
-            else { id = UUID(); knownIDs[key] = id }
-
-            let frame    = CGRect(origin: pos, size: size)
-            let rawImage = resolveImage(element: element, description: desc, app: app)
-
-            var item = MenuBarItem(
-                id: id,
-                bundleID: bundleID,
-                appName: appName,
-                axDescription: desc,
-                frame: frame,
-                isSystemItem: isSystem,
-                categoryID: dtoByKey[key]?.categoryID,
-                sortOrder: dtoByKey[key]?.sortOrder ?? sortIndex
-            )
-            item.image     = rawImage.map { processImage($0) }
-            item.axElement = element
-
-            items.append(item)
-            sortIndex += 1
-        }
-
-        return items
-    }
-
-    // MARK: - Threshold
-
-    private func statusThreshold() -> CGFloat {
-        guard let screen = NSScreen.main else { return 800 }
-        return screen.frame.minX + screen.frame.width * 0.55
-    }
-
     // MARK: - AX helpers
 
     private func axPosition(_ e: AXUIElement) -> CGPoint {
@@ -548,12 +292,6 @@ final class MenuBarEnumerator {
     private func axTitle(_ e: AXUIElement) -> String {
         var r: CFTypeRef?
         AXUIElementCopyAttributeValue(e, kAXTitleAttribute as CFString, &r)
-        return (r as? String) ?? ""
-    }
-
-    private func axRole(_ e: AXUIElement) -> String {
-        var r: CFTypeRef?
-        AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r)
         return (r as? String) ?? ""
     }
 
@@ -626,23 +364,6 @@ final class MenuBarEnumerator {
             return "wifi"
         }
         return map[description]
-    }
-
-    // MARK: - Image processing (spec §3.5: +10 % saturation, +5 % contrast)
-
-    private func processImage(_ src: NSImage) -> NSImage {
-        guard let tiff = src.tiffRepresentation,
-              let bm = NSBitmapImageRep(data: tiff) else { return src }
-        let ci = CIImage(bitmapImageRep: bm)
-        let ctx = CIContext()
-        guard let f = CIFilter(name: "CIColorControls") else { return src }
-        f.setValue(ci,   forKey: kCIInputImageKey)
-        f.setValue(1.10, forKey: kCIInputSaturationKey)
-        f.setValue(1.05, forKey: kCIInputContrastKey)
-        f.setValue(0.0,  forKey: kCIInputBrightnessKey)
-        guard let out = f.outputImage,
-              let cg  = ctx.createCGImage(out, from: out.extent) else { return src }
-        return NSImage(cgImage: cg, size: src.size)
     }
 
     // MARK: - Helpers
